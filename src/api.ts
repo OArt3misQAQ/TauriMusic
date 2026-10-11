@@ -136,6 +136,24 @@ export interface ScanWithLibrary {
   library: string;
 }
 
+/** 听歌统计(仅本机 stats.json,零联网) */
+export interface TrackStat {
+  /** 累计收听秒数 */
+  sec: number;
+  /** 播放次数(≥半曲或 ≥4 分钟记一次) */
+  count: number;
+  /** 最后收听时刻(unix 秒) */
+  last: number;
+}
+
+export interface StatsData {
+  version: number;
+  /** 本地日期(YYYY-MM-DD)→ 当日收听秒数 */
+  days: Record<string, number>;
+  /** Track.id → 单曲统计 */
+  tracks: Record<string, TrackStat>;
+}
+
 export const api = {
   getLibrary: () => invoke<Library>("get_library"),
   pickFolder: () => invoke<string | null>("pick_music_folder"),
@@ -166,6 +184,10 @@ export const api = {
   setAssociation: (ext: string, enable: boolean) => invoke<void>("set_association", { ext, enable }),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enable: boolean) => invoke<void>("set_autostart", { enable }),
+  getStats: () => invoke<StatsData>("stats_get"),
+  statsAdd: (samples: Record<string, number>, plays: string[], day: string, daySec: number) =>
+    invoke<void>("stats_add", { samples, plays, day, daySec }),
+  statsClear: () => invoke<void>("stats_clear"),
   deleteTracks: (ids: string[]) =>
     invoke<{ deleted: number; failed: number }>("delete_tracks", { ids }),
   /** 还原回收站条目;ids 为空数组表示还原全部 */

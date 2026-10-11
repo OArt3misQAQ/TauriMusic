@@ -19,6 +19,7 @@
 - **浏览视图**:最近添加、专辑(网格)、艺人(列表 + 详情)、歌曲、全文搜索(歌曲 / 专辑 / 艺人);歌曲列表虚拟滚动,万首曲目依然流畅
 - **批量操作**:歌曲列表 Ctrl/Shift 多选 + 浮动操作条(播放 / 批量导出 / 批量删除),整张专辑一键导出
 - **删除与应用内回收站**:单曲与整张专辑删除,音频与歌词移入应用内回收站(保留 30 天自动清理),删除前两段确认防误触;侧边栏回收站随时还原或彻底删除,防止误删无法找回
+- **听歌统计**:统计页展示总览(累计/今日/本周时长、播放次数、听过歌曲数)、最近 30 天柱状图、最常听歌手/专辑/歌曲榜与最近播放;按「听满半曲或 4 分钟」计一次播放。设置 → 统计与隐私提供总开关——关闭后**停止收集并隐藏统计页**;数据仅保存在本机 `stats.json`,**绝不联网上传**,可一键清除
 - **深浅色外观**:默认跟随系统,可手动切换
 - **液态玻璃外观**:专辑封面驱动的氛围背景(深度模糊 + 缓慢漂移、随曲目切换淡入淡出),停靠式磨砂玻璃面板(边缘透镜折射 + 跟随光标流动的高光),可一键开关
 - **TMC 音乐包**:`.tmc` = 标准 7z 包(音频 + 同名 LRC + 封面 + meta.json),支持双击导入 / 拖拽导入 / 一键导出,文件关联开箱即用
@@ -89,13 +90,14 @@ cargo run --example make_beyond_tmc -- <输入目录> <输出目录> [过滤词]
 ```
 src/                    # Vue 3 前端
   api.ts                #   Tauri command 封装与类型
-  stores/               #   ui / library / player / playlists / shortcuts / context / storage
+  stores/               #   ui / library / player / playlists / shortcuts / context / storage / stats
   components/           #   顶栏、侧边栏、全屏播放页、曲目列表、弹窗、右键菜单等
-  views/                #   最近添加 / 专辑 / 专辑详情 / 艺人 / 歌曲 / 搜索 / 播放列表 / 歌单详情 / 回收站
+  views/                #   最近添加 / 专辑 / 专辑详情 / 艺人 / 歌曲 / 搜索 / 播放列表 / 歌单详情 / 听歌统计 / 回收站
 src-tauri/
   src/scanner.rs        #   曲库扫描与元数据解析(lofty)
   src/lyrics.rs         #   LRC 解析与编码修复
   src/model.rs          #   数据模型与 library.json 持久化(原子写 + 备份恢复)
+  src/stats.rs          #   听歌统计合并与原子持久化(stats.json,仅本机)
   src/lib.rs            #   Tauri commands(导入/导出/删除/在线匹配/文件关联/托盘)
   examples/make_fixture.rs      # 示例曲库生成器
   examples/make_tmc.rs          # TMC 演示包生成 + 解包/网易云调试工具
@@ -108,6 +110,7 @@ TauriMusic-promo/       # 宣传素材
 ## 数据存储
 
 - 曲库、文件夹配置、播放列表与应用内回收站:`%APPDATA%\com.art3mis.taurimusic\library.json`(写入为原子替换,旧文件保留为 `library.json.bak`)
+- 听歌统计:`%APPDATA%\com.art3mis.taurimusic\stats.json`(同样原子写 + `.bak` 备份;仅本机,零联网,统计总开关在设置 → 统计与隐私)
 - 回收站文件本体:`%APPDATA%\com.art3mis.taurimusic\Trash\`(删除的音乐移到这里,30 天后启动时自动清理)
 - 封面缓存:`%LOCALAPPDATA%\com.art3mis.taurimusic\covers\`(256px 列表图 + 512px 详情图两级缩略图,列表场景解码内存降至 1/4;每次扫描自动清理已删音乐残留的孤儿缩略图)
 

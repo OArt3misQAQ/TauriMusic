@@ -19,10 +19,12 @@ import AlbumDetailView from "./views/AlbumDetailView.vue";
 import ArtistsView from "./views/ArtistsView.vue";
 import SongsView from "./views/SongsView.vue";
 import SearchView from "./views/SearchView.vue";
+import StatsView from "./views/StatsView.vue";
 import TrashView from "./views/TrashView.vue";
 import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
 import { exportState, initLibrary, initDragImport } from "./stores/library";
 import { initShortcuts } from "./stores/shortcuts";
+import { initStats } from "./stores/stats";
 import { current } from "./stores/player";
 import { nameDialog, picker } from "./stores/playlists";
 
@@ -35,6 +37,7 @@ const views = {
   search: SearchView,
   playlists: PlaylistsView,
   playlist: PlaylistDetailView,
+  stats: StatsView,
   trash: TrashView,
 } as const;
 
@@ -68,6 +71,7 @@ onMounted(() => {
   initTheme();
   initSkin();
   initWelcome();
+  initStats();
   void initLibrary();
   void initDragImport();
   initShortcuts();

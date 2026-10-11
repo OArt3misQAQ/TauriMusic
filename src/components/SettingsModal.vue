@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import Modal from "./Modal.vue";
 import { ui, setThemeMode, setSkin } from "../stores/ui";
 import { lib, flashStatus, openImportDir, addFolder, rescan, importTmcPick, importMusicPick } from "../stores/library";
+import { statsEnabled, setStatsEnabled, clearStats } from "../stores/stats";
 import { api, type AssocState } from "../api";
 
 const skinOptions = [
@@ -58,6 +59,28 @@ async function toggleAssoc(a: AssocState): Promise<void> {
     flashStatus(`格式关联修改失败: ${String(err)}`);
   }
 }
+
+// 清除统计数据:两段确认(3 秒内再点一次才执行),防止误触毁掉全部统计
+const clearArmed = ref(false);
+let clearTimer = 0;
+
+async function clearStatsConfirmed(): Promise<void> {
+  if (!clearArmed.value) {
+    clearArmed.value = true;
+    window.clearTimeout(clearTimer);
+    clearTimer = window.setTimeout(() => (clearArmed.value = false), 3000);
+    return;
+  }
+  clearArmed.value = false;
+  window.clearTimeout(clearTimer);
+  try {
+    await clearStats();
+    flashStatus("统计数据已清除");
+  } catch (err) {
+    console.error("清除统计失败", err);
+    flashStatus(`清除失败: ${String(err)}`);
+  }
+}
 </script>
 
 <template>
@@ -76,6 +99,19 @@ async function toggleAssoc(a: AssocState): Promise<void> {
         <svg v-if="autostart" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m5 12.5 4.5 4.5L19 8" />
         </svg>
+      </button>
+    </div>
+
+    <div class="sec">统计与隐私</div>
+    <div class="group">
+      <button class="opt" :class="{ on: statsEnabled }" @click="setStatsEnabled(!statsEnabled)">
+        <span>听歌统计<small class="opt-sub">记录收听时长与次数,用于统计页榜单;数据仅保存在本机,绝不联网上传。关闭后停止统计并隐藏统计页</small></span>
+        <svg v-if="statsEnabled" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m5 12.5 4.5 4.5L19 8" />
+        </svg>
+      </button>
+      <button class="opt" :class="{ armed: clearArmed }" @click="clearStatsConfirmed">
+        <span>清除统计数据<small class="opt-sub">{{ clearArmed ? "再点一次确认清除,此操作不可恢复" : "删除本机全部听歌统计,不可恢复" }}</small></span>
       </button>
     </div>
 
@@ -235,6 +271,13 @@ async function toggleAssoc(a: AssocState): Promise<void> {
   margin-left: auto;
   flex: none;
   color: var(--text-2);
+}
+/* 清除统计的两段确认态:文字转警示色,提示「再点一次才执行」 */
+.opt.armed {
+  color: var(--danger);
+}
+.opt.armed :deep(.opt-sub) {
+  color: var(--danger);
 }
 
 .row {

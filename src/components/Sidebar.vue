@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { ui, go, openPlaylist, type ViewName } from "../stores/ui";
 import { lib } from "../stores/library";
+import { statsEnabled } from "../stores/stats";
 import { askCreatePlaylist, openPlaylistMenu } from "../stores/playlists";
 
 const navItems = [
@@ -100,6 +101,13 @@ const statusText = computed(() =>
           <path d="M20.7 15.5V9l-3.4.9" />
         </svg>
         <span class="pl-text">全部播放列表</span>
+      </button>
+      <!-- 听歌统计:总开关关闭时入口一并隐藏(设置 → 统计与隐私) -->
+      <button v-if="statsEnabled" class="nav-item" :class="{ active: ui.view === 'stats' }" @click="go('stats')">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M5 20v-8M12 20V5M19 20v-5" />
+        </svg>
+        <span>听歌统计</span>
       </button>
     </nav>
 

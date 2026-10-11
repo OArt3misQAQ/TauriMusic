@@ -11,6 +11,7 @@ export type ViewName =
   | "search"
   | "playlists"
   | "playlist"
+  | "stats"
   | "trash";
 /** 皮肤模式:跟随系统 / 浅色 / 黑色 */
 export type ThemeMode = "system" | "light" | "dark";

@@ -1,6 +1,7 @@
 mod lyrics;
 mod model;
 mod scanner;
+mod stats;
 
 use model::Library;
 use sha2::Digest as _;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub cache_dir: PathBuf,
     /// 扫描重入闸:同一时刻只允许一次全量扫描
     pub scan_gate: Mutex<()>,
+    /// 听歌统计(仅本机 stats.json):内存常驻,冲刷时原子落盘
+    pub stats: Mutex<stats::StatsData>,
 }
 
 pub(crate) const LIBRARY_FILE: &str = "library.json";
@@ -3335,6 +3338,55 @@ fn set_autostart(enable: bool) -> Result<(), String> {
     }
 }
 
+// ===== 听歌统计(仅本机,零联网):采集在前端,这里只做合并与原子落盘 =====
+
+/// 冲刷一批增量:每曲收听秒数 + 播放次数 + 当日总时长。
+/// 合并在内存锁内完成(微秒级),落盘放 blocking 线程
+#[tauri::command]
+async fn stats_add(
+    state: State<'_, AppState>,
+    samples: HashMap<String, f64>,
+    plays: Vec<String>,
+    day: String,
+    day_sec: f64,
+) -> Result<(), String> {
+    let path = state.data_dir.join(stats::STATS_FILE);
+    let snapshot = {
+        let mut s = state.stats.lock().map_err(|_| "统计锁中毒")?;
+        s.merge(&samples, &plays, &day, day_sec, stats::now_secs());
+        s.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || snapshot.save(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// 全量读取(统计页打开时拉一次)
+#[tauri::command]
+fn stats_get(state: State<AppState>) -> Result<stats::StatsData, String> {
+    state
+        .stats
+        .lock()
+        .map(|g| g.clone())
+        .map_err(|_| "统计锁中毒".into())
+}
+
+/// 清空统计:内存归零并立即落盘(设置页「清除统计数据」)
+#[tauri::command]
+async fn stats_clear(state: State<'_, AppState>) -> Result<(), String> {
+    let path = state.data_dir.join(stats::STATS_FILE);
+    let snapshot = {
+        let mut s = state.stats.lock().map_err(|_| "统计锁中毒")?;
+        *s = stats::StatsData::default();
+        s.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || snapshot.save(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_library(state: State<AppState>) -> Result<InvokeResponseBody, String> {
     // 锁内直接序列化成 JSON 字符串原样透传(InvokeResponseBody::Json),
@@ -3469,11 +3521,13 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).ok();
             std::fs::create_dir_all(cache_dir.join("covers")).ok();
             let lib = Library::load(&data_dir.join(LIBRARY_FILE));
+            let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
                 lib: Mutex::new(lib),
                 data_dir,
                 cache_dir,
                 scan_gate: Mutex::new(()),
+                stats: Mutex::new(stats),
             });
             // 首次启动即建好导入目录并登记为扫描来源
             ensure_import_dir(handle, &app.state::<AppState>()).ok();
@@ -3537,6 +3591,9 @@ pub fn run() {
             set_association,
             get_autostart,
             set_autostart,
+            stats_add,
+            stats_get,
+            stats_clear,
             delete_tracks,
             restore_tracks,
             purge_trash,
