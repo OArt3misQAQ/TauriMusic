@@ -9,11 +9,15 @@
 //! SMTC 是 COM 组件:全部操作收敛在一条专用线程(启动即 CoInitializeEx),
 //! 命令经 channel 转发,避免各命令线程的 COM 套间问题。
 
+// 以下三组导入均只在 Windows(SMTC)代码路径使用,非 Windows 编译时不存在
 #[cfg(windows)]
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::sync::Mutex;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(windows)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 
 // 托盘弹窗的逻辑尺寸(物理像素 = 逻辑 × 显示缩放,定位时换算)
 const POPUP_W: f64 = 320.0;
@@ -121,9 +125,9 @@ pub(crate) fn on_track(
     cover: Option<String>,
     duration: f64,
 ) {
-    // 非 Windows:duration 仅进 SMTC 消息
+    // 非 Windows:SMTC 通道不存在,全部参数仅 Windows 路径使用
     #[cfg(not(windows))]
-    let _ = duration;
+    let _ = (app, title, artist, cover, duration);
     #[cfg(windows)]
     if let Some(b) = app.try_state::<MediaBridge>() {
         if let Ok(g) = b.smtc.lock() {
@@ -141,6 +145,8 @@ pub(crate) fn on_track(
 
 /// 播放/暂停状态
 pub(crate) fn on_status(app: &AppHandle, playing: bool) {
+    #[cfg(not(windows))]
+    let _ = (app, playing);
     #[cfg(windows)]
     if let Some(b) = app.try_state::<MediaBridge>() {
         if let Ok(g) = b.smtc.lock() {
@@ -153,6 +159,8 @@ pub(crate) fn on_status(app: &AppHandle, playing: bool) {
 
 /// 进度(节流后约 1 次/秒)
 pub(crate) fn on_position(app: &AppHandle, position: f64, duration: f64) {
+    #[cfg(not(windows))]
+    let _ = (app, position, duration);
     #[cfg(windows)]
     if let Some(b) = app.try_state::<MediaBridge>() {
         if let Ok(g) = b.smtc.lock() {
