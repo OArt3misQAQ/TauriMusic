@@ -3,7 +3,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { StorageKeys, storageGetString, storageRemove, storageSet } from "./storage";
 
 export type ViewName =
-  | "home"
   | "albums"
   | "album"
   | "artists"
@@ -45,7 +44,7 @@ interface UiState {
 }
 
 export const ui = reactive<UiState>({
-  view: "home",
+  view: "albums",
   albumKey: null,
   artist: null,
   playlistId: null,

@@ -188,6 +188,12 @@ export const api = {
   statsAdd: (samples: Record<string, number>, plays: string[], day: string, daySec: number) =>
     invoke<void>("stats_add", { samples, plays, day, daySec }),
   statsClear: () => invoke<void>("stats_clear"),
+  /** 系统媒体控制(SMTC)与托盘菜单的状态推送 */
+  smtcSetTrack: (title: string, artist: string, cover: string | null, duration: number) =>
+    invoke<void>("smtc_set_track", { title, artist, cover, duration }),
+  smtcSetStatus: (playing: boolean) => invoke<void>("smtc_set_status", { playing }),
+  smtcSetPosition: (position: number, duration: number) =>
+    invoke<void>("smtc_set_position", { position, duration }),
   deleteTracks: (ids: string[]) =>
     invoke<{ deleted: number; failed: number }>("delete_tracks", { ids }),
   /** 还原回收站条目;ids 为空数组表示还原全部 */

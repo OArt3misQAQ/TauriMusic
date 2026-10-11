@@ -29,7 +29,7 @@ export function setStatsEnabled(on: boolean): void {
     endSpan(true);
     void flush();
     // 正看着统计页时关闭:退出页面
-    if (ui.view === "stats") ui.view = "home";
+    if (ui.view === "stats") ui.view = "albums";
   }
 }
 

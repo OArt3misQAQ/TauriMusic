@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-10-11T16:35:58.995Z",
+  "sessionId": "sess_6544bf0e-77ac-4fcd-8525-1afe965100e0",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "F:\\TauriMusic\\src\\App.vue",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 6,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

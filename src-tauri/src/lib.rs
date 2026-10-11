@@ -1,4 +1,5 @@
 mod lyrics;
+mod media;
 mod model;
 mod scanner;
 mod stats;
@@ -9,14 +10,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{
-    ipc::InvokeResponseBody,
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, State, WindowEvent,
-};
+use tauri::{ipc::InvokeResponseBody, Emitter, Manager, State, WindowEvent};
 
-fn show_main(app: &tauri::AppHandle) {
+pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
@@ -24,7 +20,7 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
-fn toggle_main(app: &tauri::AppHandle) {
+pub(crate) fn toggle_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if w.is_visible().unwrap_or(false) {
             let _ = w.hide();
@@ -3387,6 +3383,32 @@ async fn stats_clear(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ===== 系统媒体控制(SMTC)+ 托盘菜单的状态推送(见 media.rs) =====
+
+#[tauri::command]
+fn smtc_set_track(
+    app: tauri::AppHandle,
+    title: String,
+    artist: String,
+    cover: Option<String>,
+    duration: f64,
+) -> Result<(), String> {
+    media::on_track(&app, title, artist, cover, duration);
+    Ok(())
+}
+
+#[tauri::command]
+fn smtc_set_status(app: tauri::AppHandle, playing: bool) -> Result<(), String> {
+    media::on_status(&app, playing);
+    Ok(())
+}
+
+#[tauri::command]
+fn smtc_set_position(app: tauri::AppHandle, position: f64, duration: f64) -> Result<(), String> {
+    media::on_position(&app, position, duration);
+    Ok(())
+}
+
 #[tauri::command]
 fn get_library(state: State<AppState>) -> Result<InvokeResponseBody, String> {
     // 锁内直接序列化成 JSON 字符串原样透传(InvokeResponseBody::Json),
@@ -3539,31 +3561,8 @@ pub fn run() {
             let cli_args: Vec<String> = std::env::args().collect();
             handle_open_paths(handle, &cli_args);
 
-            // 托盘常驻:左键切换显示/隐藏,右键菜单可显示或退出
-            let show = MenuItem::with_id(app, "show", "显示 TauriMusic", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show, &quit])?;
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().expect("缺少应用图标").clone())
-                .tooltip("TauriMusic")
-                .menu(&tray_menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+            // 托盘 + 系统媒体控制(SMTC):菜单/封面/进度/播放控制都在 media.rs
+            media::init(handle)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3594,6 +3593,9 @@ pub fn run() {
             stats_add,
             stats_get,
             stats_clear,
+            smtc_set_track,
+            smtc_set_status,
+            smtc_set_position,
             delete_tracks,
             restore_tracks,
             purge_trash,

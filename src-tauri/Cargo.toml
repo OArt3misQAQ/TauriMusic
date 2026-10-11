@@ -32,6 +32,8 @@ sevenz-rust2 = "0.23.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# SMTC(系统媒体传输控制):Windows 音量弹窗/锁屏/控制中心集成
+windows = { version = "0.61", features = ["Foundation", "Media", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_System_Com", "Win32_System_WinRT"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

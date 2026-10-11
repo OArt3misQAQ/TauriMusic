@@ -13,7 +13,6 @@ import NameModal from "./components/NameModal.vue";
 import PlaylistPickerModal from "./components/PlaylistPickerModal.vue";
 import ExportModal from "./components/ExportModal.vue";
 import ContextMenu from "./components/ContextMenu.vue";
-import HomeView from "./views/HomeView.vue";
 import AlbumsView from "./views/AlbumsView.vue";
 import AlbumDetailView from "./views/AlbumDetailView.vue";
 import ArtistsView from "./views/ArtistsView.vue";
@@ -25,11 +24,11 @@ import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
 import { exportState, initLibrary, initDragImport } from "./stores/library";
 import { initShortcuts } from "./stores/shortcuts";
 import { initStats } from "./stores/stats";
+import { initMediaBridge } from "./stores/media";
 import { current } from "./stores/player";
 import { nameDialog, picker } from "./stores/playlists";
 
 const views = {
-  home: HomeView,
   albums: AlbumsView,
   album: AlbumDetailView,
   artists: ArtistsView,
@@ -72,6 +71,7 @@ onMounted(() => {
   initSkin();
   initWelcome();
   initStats();
+  initMediaBridge();
   void initLibrary();
   void initDragImport();
   initShortcuts();

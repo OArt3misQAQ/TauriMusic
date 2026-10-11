@@ -6,7 +6,6 @@ import { statsEnabled } from "../stores/stats";
 import { askCreatePlaylist, openPlaylistMenu } from "../stores/playlists";
 
 const navItems = [
-  { name: "home", label: "最近添加", icon: "clock" },
   { name: "albums", label: "专辑", icon: "disc" },
   { name: "artists", label: "艺人", icon: "artist" },
   { name: "songs", label: "歌曲", icon: "note" },
@@ -18,8 +17,8 @@ function isActive(name: string): boolean {
   return ui.view === name;
 }
 
-/** 搜索前的视图:清空搜索时回到原处而不是固定落回最近添加 */
-let viewBeforeSearch: ViewName = "home";
+/** 搜索前的视图:清空搜索时回到原处而不是固定落回专辑页 */
+let viewBeforeSearch: ViewName = "albums";
 /** 输入框本地状态:180ms 防抖后再更新全局 ui.search,大曲库下避免每键击全库过滤 */
 const searchInput = ref(ui.search);
 let searchTimer = 0;
@@ -71,11 +70,7 @@ const statusText = computed(() =>
         :class="{ active: isActive(item.name) }"
         @click="go(item.name)"
       >
-        <svg v-if="item.icon === 'clock'" class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-          <circle cx="12" cy="12" r="8.2" />
-          <path d="M12 7.8v4.4l2.8 1.6" />
-        </svg>
-        <svg v-else-if="item.icon === 'disc'" class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <svg v-if="item.icon === 'disc'" class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="12" cy="12" r="8.2" />
           <circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none" />
         </svg>
