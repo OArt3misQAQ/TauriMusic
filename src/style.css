@@ -301,9 +301,15 @@ html.dark .ambient {
     linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.05) 32%, rgba(0, 0, 0, 0.06) 62%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 亮色玻璃:白色纱罩,让封面色变成柔和粉彩而不是整面红 */
+/* 亮色玻璃:白色纱罩加强版——深色玻璃靠暗色 scrim 压得住封面色,
+   亮色下 38%~60% 的白纱压不住高饱和封面(saturate 2),整窗被染成一面色块;
+   纱罩提到 66%~82% 并把氛围饱和度回落,封面色变成淡淡的粉彩而非果酱 */
 html.glass:not(.dark) .ambient-scrim {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.38) 40%, rgba(255, 255, 255, 0.5) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(255, 255, 255, 0.66) 45%, rgba(255, 255, 255, 0.76) 100%);
+}
+
+html.glass:not(.dark) .ambient-img {
+  filter: blur(88px) saturate(1.5) brightness(1.05);
 }
 
 /* 玻璃模式材质令牌:跟随深浅色 —— 白玻璃 / 黑玻璃 */
@@ -491,6 +497,14 @@ html.glass .content {
   background: transparent;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* 亮色玻璃:内容区原本全透明,高饱和封面直接染透整个内容区(暗色被暗 scrim
+   撑住,亮色撑不住)。给内容区一层半透白托底——氛围背景本身已是 88px 大模糊,
+   无需再叠 backdrop-filter(零 GPU 开销),文字回到干净底色上,
+   氛围光只从面板缝隙与玻璃本体透出(与 Apple Music 浅色同构) */
+html.glass:not(.dark) .content {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.5));
 }
 
 /* 胶囊形控件:搜索框与导航项 */
