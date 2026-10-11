@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import Sidebar from "./components/Sidebar.vue";
 import TopBar from "./components/TopBar.vue";
 import NowPlaying from "./components/NowPlaying.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import AboutModal from "./components/AboutModal.vue";
 import WelcomeModal from "./components/WelcomeModal.vue";
+import TrayPopup from "./components/TrayPopup.vue";
 import PlaylistsView from "./views/PlaylistsView.vue";
 import PlaylistDetailView from "./views/PlaylistDetailView.vue";
 import NameModal from "./components/NameModal.vue";
@@ -66,9 +68,16 @@ function onPointerMove(e: PointerEvent): void {
   });
 }
 
+/** 托盘迷你面板是同前端的第二个窗口:按标签分支渲染,不跑主窗口的重初始化 */
+const isTrayPopup = getCurrentWindow().label === "tray";
+
 onMounted(() => {
-  initTheme();
-  initSkin();
+  if (isTrayPopup) {
+    // 面板只需要皮肤/深浅色令牌(与主窗口共享 localStorage),状态靠事件广播
+    initTheme();
+    initSkin();
+    return;
+  }
   initWelcome();
   initStats();
   initMediaBridge();
@@ -84,7 +93,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app">
+  <TrayPopup v-if="isTrayPopup" />
+  <div v-else class="app">
     <!-- SVG 折射滤镜:供玻璃卡片 backdrop-filter 引用(隐藏元素)。
          两次位移分别做横/纵"透镜"贴图:贴图 R/G 各只有一轴渐变(另一轴恒定 128 不位移),
          渐变集中在边缘 14%——中心清晰、边缘像真玻璃一样向外弯折。
@@ -146,7 +156,6 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
     <ContextMenu />
   </div>
 </template>
-
 <style scoped>
 .app {
   height: 100%;

@@ -21,6 +21,20 @@
         "decorations": false,
         "shadow": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService"
+      },
+      {
+        "label": "tray",
+        "title": "TauriMusic 托盘面板",
+        "width": 320,
+        "height": 152,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false
       }
     ],
     "security": {

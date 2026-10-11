@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{ipc::InvokeResponseBody, Emitter, Manager, State, WindowEvent};
+use tauri::{ipc::InvokeResponseBody, Emitter, Listener, Manager, State, WindowEvent};
 
 pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -3529,12 +3529,19 @@ pub fn run() {
             show_main(app);
             handle_open_paths(app, &args);
         }))
-        // 点 × 隐藏到托盘常驻,托盘菜单"退出"才真正退出
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
+        // 点 × 隐藏到托盘常驻,托盘菜单"退出"才真正退出;
+        // 托盘迷你面板失焦即隐藏(它 show 时会接管焦点)
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            WindowEvent::Focused(false) if window.label() == "tray" => {
                 let _ = window.hide();
             }
+            _ => {}
         })
         .setup(|app| {
             let handle = app.handle();
@@ -3561,8 +3568,18 @@ pub fn run() {
             let cli_args: Vec<String> = std::env::args().collect();
             handle_open_paths(handle, &cli_args);
 
-            // 托盘 + 系统媒体控制(SMTC):菜单/封面/进度/播放控制都在 media.rs
+            // 托盘 + 系统媒体控制(SMTC):迷你面板/封面/进度/播放控制都在 media.rs
             media::init(handle)?;
+
+            // 托盘迷你面板的系统级动作(退出/唤起主窗口)由前端 emit 过来
+            let sys_handle = handle.clone();
+            handle.listen("media://sys", move |event| {
+                match event.payload().trim_matches('"') {
+                    "quit" => sys_handle.exit(0),
+                    "show" => crate::show_main(&sys_handle),
+                    _ => {}
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

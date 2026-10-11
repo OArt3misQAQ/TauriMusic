@@ -1,120 +1,71 @@
-//! 媒体系统集成:Windows SMTC(系统媒体传输控制)+ 增强托盘菜单。
+//! 媒体系统集成:Windows SMTC(系统媒体传输控制)+ 托盘弹窗。
 //! - SMTC:让 Windows 音量弹窗 / 锁屏 / 控制中心显示曲名、歌手、封面,
 //!   并可直接播放/暂停/上一曲/下一曲(参照网易云 Windows 客户端的能力面)
-//! - 托盘:右键显示正在播放(封面缩略图标 + 曲名艺人 + 实时进度文本)与播放控制
+//! - 托盘:左键唤起主窗口;右键弹出原生菜单装不下的迷你播放面板
+//!   (封面 + 曲名 + 真实进度条 + 播放控制,由前端 TrayPopup 组件渲染)
 //!
 //! 播放状态的唯一拥有者是前端 WebView(音频元素在那边),本模块只:
 //! 接收前端推送的状态命令(曲目/状态/进度),把按钮事件 emit 回前端。
 //! SMTC 是 COM 组件:全部操作收敛在一条专用线程(启动即 CoInitializeEx),
 //! 命令经 channel 转发,避免各命令线程的 COM 套间问题。
 
-// PathBuf 仅 SMTC 消息(Windows)使用,非 Windows 编译时不存在
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::image::Image;
-use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager};
 
-/// 托盘进度/曲名文本的上限:过长会把菜单撑得很宽
-const TRAY_TEXT_MAX: usize = 48;
-
-fn ellipsize(s: &str) -> String {
-    if s.chars().count() <= TRAY_TEXT_MAX {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(TRAY_TEXT_MAX).collect();
-        format!("{cut}…")
-    }
-}
-
-/// 秒 → 「m:ss」(托盘进度文本)
-pub(crate) fn fmt_clock(secs: f64) -> String {
-    let s = if secs.is_finite() && secs > 0.0 {
-        secs as u64
-    } else {
-        0
-    };
-    format!("{}:{:02}", s / 60, s % 60)
-}
-
-/// 托盘可变项的句柄缓存:避免重复 set_text 造成的菜单闪烁
-pub(crate) struct TrayHandles {
-    np: IconMenuItem<Wry>,
-    prog: MenuItem<Wry>,
-    toggle: MenuItem<Wry>,
-    prog_cache: String,
-    status_cache: Option<bool>,
-}
+// 托盘弹窗的逻辑尺寸(物理像素 = 逻辑 × 显示缩放,定位时换算)
+const POPUP_W: f64 = 320.0;
+const POPUP_H: f64 = 152.0;
 
 /// 托盘 + SMTC 的共享桥
 pub(crate) struct MediaBridge {
-    pub tray: Mutex<Option<TrayHandles>>,
     #[cfg(windows)]
     pub(crate) smtc: Mutex<Option<std::sync::mpsc::Sender<SmtcMsg>>>,
 }
 
-/// 建托盘菜单并启动 SMTC;在 setup 里调用
+/// 建托盘图标并启动 SMTC;在 setup 里调用
 pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
-    // 正在播放项:封面缩略图 + 曲名 - 艺人,点击唤起主窗口
-    let np = IconMenuItem::with_id(app, "np", "未在播放", true, None::<Image>, None::<&str>)?;
-    let prog = MenuItem::with_id(app, "prog", "0:00 / 0:00", false, None::<&str>)?;
-    let toggle = MenuItem::with_id(app, "toggle", "暂停", true, None::<&str>)?;
-    let prev = MenuItem::with_id(app, "prev", "上一曲", true, None::<&str>)?;
-    let next = MenuItem::with_id(app, "next", "下一曲", true, None::<&str>)?;
-    let show = MenuItem::with_id(app, "show", "显示 TauriMusic", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    let tray_menu = Menu::with_items(
-        app,
-        &[
-            &np, &prog, &sep1, &toggle, &prev, &next, &sep2, &show, &quit,
-        ],
-    )?;
-
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().expect("缺少应用图标").clone())
         .tooltip("TauriMusic")
-        .menu(&tray_menu)
+        // 右键弹出迷你面板而非原生菜单:原生 Win32 菜单只有纯文本行,
+        // 放不下进度条与封面,质感上限太低
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            // 正在播放条目 / 显示:唤起主窗口
-            "np" | "show" => crate::show_main(app),
-            // 播放控制:按钮状态在前端,转发事件让前端驱动播放器
-            "toggle" => {
-                let _ = app.emit("media://action", "toggle");
-            }
-            "prev" => {
-                let _ = app.emit("media://action", "prev");
-            }
-            "next" => {
-                let _ = app.emit("media://action", "next");
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
+                button,
                 button_state: MouseButtonState::Up,
+                rect,
                 ..
             } = event
             {
-                crate::toggle_main(tray.app_handle());
+                match button {
+                    // 左键:切换主窗口显示/隐藏
+                    MouseButton::Left => crate::toggle_main(tray.app_handle()),
+                    // 右键:在图标上方弹出迷你播放面板(坐标统一换算成物理像素)
+                    MouseButton::Right => {
+                        let (cx, top, ih) = match (rect.position, rect.size) {
+                            (tauri::Position::Physical(p), tauri::Size::Physical(s)) => (
+                                p.x as f64 + s.width as f64 / 2.0,
+                                p.y as f64,
+                                s.height as f64,
+                            ),
+                            (tauri::Position::Logical(p), tauri::Size::Logical(s)) => {
+                                (p.x + s.width / 2.0, p.y, s.height)
+                            }
+                            _ => (0.0, 0.0, 0.0),
+                        };
+                        show_tray_popup(tray.app_handle(), cx, top, ih);
+                    }
+                    _ => {}
+                }
             }
         })
         .build(app)?;
 
     app.manage(MediaBridge {
-        tray: Mutex::new(Some(TrayHandles {
-            np,
-            prog,
-            toggle,
-            prog_cache: String::new(),
-            status_cache: None,
-        })),
         #[cfg(windows)]
         smtc: Mutex::new(None),
     });
@@ -131,9 +82,38 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 把迷你面板摆到托盘图标正上方:图标中点水平居中,底边距图标顶 8px;
+/// 越界时按所在显示器夹取,任务栏在顶部时改到图标下方。
+/// 图标几何量(中点 x/顶边 y/高度)为物理像素
+fn show_tray_popup(app: &AppHandle, icon_cx: f64, icon_top: f64, icon_h: f64) {
+    let Some(w) = app.get_webview_window("tray") else {
+        return;
+    };
+    let Ok(Some(monitor)) = app.monitor_from_point(icon_cx, icon_top) else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let (pw, ph) = (POPUP_W * scale, POPUP_H * scale);
+
+    let mx = monitor.position().x as f64;
+    let my = monitor.position().y as f64;
+    let mw = monitor.size().width as f64;
+
+    let x = (icon_cx - pw / 2.0).clamp(mx + 4.0, mx + mw - pw - 4.0);
+    let mut y = icon_top - ph - 8.0;
+    if y < my + 4.0 {
+        // 任务栏在屏幕顶部:面板改到图标下方
+        y = icon_top + icon_h + 8.0;
+    }
+    let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    let _ = w.show();
+    // 接管焦点:失焦即隐藏(见 lib.rs 的窗口事件)
+    let _ = w.set_focus();
+}
+
 // ===== 前端命令入口(lib.rs 的三个 #[tauri::command] 调到这里) =====
 
-/// 曲目切换:更新托盘与 SMTC 元数据(含封面缩略图)
+/// 曲目切换:推送 SMTC 元数据(含封面)
 pub(crate) fn on_track(
     app: &AppHandle,
     title: String,
@@ -141,7 +121,7 @@ pub(crate) fn on_track(
     cover: Option<String>,
     duration: f64,
 ) {
-    // 非 Windows:duration 仅进 SMTC 消息,托盘不使用
+    // 非 Windows:duration 仅进 SMTC 消息
     #[cfg(not(windows))]
     let _ = duration;
     #[cfg(windows)]
@@ -149,18 +129,14 @@ pub(crate) fn on_track(
         if let Ok(g) = b.smtc.lock() {
             if let Some(tx) = g.as_ref() {
                 let _ = tx.send(SmtcMsg::Track {
-                    title: title.clone(),
-                    artist: artist.clone(),
-                    cover: cover.clone().map(PathBuf::from),
+                    title,
+                    artist,
+                    cover: cover.map(PathBuf::from),
                     duration,
                 });
             }
         }
     }
-    let _ = app.run_on_main_thread({
-        let app = app.clone();
-        move || tray_now_playing(&app, &title, &artist, cover.as_deref())
-    });
 }
 
 /// 播放/暂停状态
@@ -173,10 +149,6 @@ pub(crate) fn on_status(app: &AppHandle, playing: bool) {
             }
         }
     }
-    let _ = app.run_on_main_thread({
-        let app = app.clone();
-        move || tray_status(&app, playing)
-    });
 }
 
 /// 进度(节流后约 1 次/秒)
@@ -189,66 +161,6 @@ pub(crate) fn on_position(app: &AppHandle, position: f64, duration: f64) {
             }
         }
     }
-    let _ = app.run_on_main_thread({
-        let app = app.clone();
-        move || tray_progress(&app, position, duration)
-    });
-}
-
-// ===== 托盘更新(必须在主线程:菜单是 UI 对象) =====
-
-fn tray_now_playing(app: &AppHandle, title: &str, artist: &str, cover: Option<&str>) {
-    let Some(b) = app.try_state::<MediaBridge>() else {
-        return;
-    };
-    let Ok(mut g) = b.tray.lock() else { return };
-    let Some(h) = g.as_mut() else { return };
-    let text = if artist.is_empty() {
-        ellipsize(title)
-    } else {
-        ellipsize(&format!("{title} - {artist}"))
-    };
-    let _ = h.np.set_text(&text);
-    // 封面缩略图:本地缓存路径解码 → 32×32 RGBA;无封面时清掉图标
-    let icon = cover.and_then(decode_icon);
-    if let Err(e) = h.np.set_icon(icon) {
-        eprintln!("[tray] 封面图标更新失败: {e}");
-    }
-}
-
-fn tray_progress(app: &AppHandle, position: f64, duration: f64) {
-    let Some(b) = app.try_state::<MediaBridge>() else {
-        return;
-    };
-    let Ok(mut g) = b.tray.lock() else { return };
-    let Some(h) = g.as_mut() else { return };
-    let text = format!("{} / {}", fmt_clock(position), fmt_clock(duration));
-    if h.prog_cache != text {
-        h.prog_cache = text.clone();
-        let _ = h.prog.set_text(&text);
-    }
-}
-
-fn tray_status(app: &AppHandle, playing: bool) {
-    let Some(b) = app.try_state::<MediaBridge>() else {
-        return;
-    };
-    let Ok(mut g) = b.tray.lock() else { return };
-    let Some(h) = g.as_mut() else { return };
-    if h.status_cache != Some(playing) {
-        h.status_cache = Some(playing);
-        let _ = h.toggle.set_text(if playing { "暂停" } else { "播放" });
-    }
-}
-
-/// 封面文件 → 32×32 RGBA(tauri Image)
-fn decode_icon(path: &str) -> Option<Image<'static>> {
-    let img = image::open(path).ok()?;
-    let thumb = img
-        .resize_to_fill(32, 32, image::imageops::FilterType::Lanczos3)
-        .to_rgba8();
-    let (w, h) = (thumb.width(), thumb.height());
-    Some(Image::new_owned(thumb.into_raw(), w, h))
 }
 
 // ===== Windows SMTC =====
@@ -275,16 +187,20 @@ fn spawn_smtc(app: AppHandle) -> std::sync::mpsc::Sender<SmtcMsg> {
     let (tx, rx) = std::sync::mpsc::channel::<SmtcMsg>();
     std::thread::Builder::new()
         .name("smtc".into())
-        .spawn(move || {
-            if let Err(e) = smtc_loop(&app, rx) {
-                // SMTC 初始化失败只降级(无系统媒体控制),不影响应用本体
-                eprintln!("[smtc] 初始化失败: {e}");
-            }
-        })
+        .spawn(move || run_smtc(app, rx))
         .expect("创建 smtc 线程失败");
     tx
 }
 
+/// 线程体:SMTC 初始化失败只降级(无系统媒体控制),不影响应用本体
+#[cfg(windows)]
+fn run_smtc(app: AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) {
+    if let Err(e) = smtc_loop(&app, rx) {
+        eprintln!("[smtc] 初始化失败: {e}");
+    }
+}
+
+// 系统媒体按钮回调的委托类型(泛型事件接口的具体化)
 #[cfg(windows)]
 fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows::core::Result<()> {
     use windows::core::{factory, HSTRING};
@@ -299,6 +215,12 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
     use windows::Win32::System::Com::CoInitializeEx;
     use windows::Win32::System::WinRT::ISystemMediaTransportControlsInterop;
 
+    // 系统媒体按钮回调的委托类型(泛型事件接口的具体化)
+    type ButtonEventCb = windows::Foundation::TypedEventHandler<
+        SystemMediaTransportControls,
+        SystemMediaTransportControlsButtonPressedEventArgs,
+    >;
+
     // WebView2 已在主线程初始化 COM;专用线程自己初始化 MTA。
     // 若模式不匹配(极少)忽略错误——WinRT 调用仍可用
     unsafe {
@@ -309,7 +231,7 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
         .get_webview_window("main")
         .and_then(|w| w.hwnd().ok())
         .ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(-1)))?;
-    // tauri 依赖树与本 crate 的 windows 版本一致时无需转换;字段类型统一为 *mut c_void
+    // tauri 依赖树与本 crate 的 windows 版本一致,字段类型统一为 *mut c_void
     let hwnd = HWND(hwnd.0);
 
     let interop: ISystemMediaTransportControlsInterop =
@@ -322,13 +244,9 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
     let _ = controls.SetIsPreviousEnabled(true);
     let _ = controls.SetPlaybackStatus(MediaPlaybackStatus::Stopped);
 
-    // 注册系统媒体按钮的 WinRT 事件回调:纯进程内事件订阅,与任何 shell 无关。
-    // 0.61 的 ButtonPressed 收泛型 TypedEventHandler,提供闭包即可
+    // 注册系统媒体按钮的 WinRT 事件回调:纯进程内事件订阅,与任何 shell 无关
     let on_button = app.clone();
-    let button_cb = windows::Foundation::TypedEventHandler::<
-        SystemMediaTransportControls,
-        SystemMediaTransportControlsButtonPressedEventArgs,
-    >::new(move |_sender, args| {
+    let button_cb = ButtonEventCb::new(move |_sender, args| {
         let args = args.ok()?;
         let button = args.Button()?;
         // 伪枚举是 struct + 常量,不能用 match
@@ -425,29 +343,4 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn fmt_clock_renders_m_ss() {
-        use super::fmt_clock;
-        // 常规值与边界:负数/NaN 一律按 0 处理
-        assert_eq!(fmt_clock(0.0), "0:00");
-        assert_eq!(fmt_clock(61.4), "1:01");
-        assert_eq!(fmt_clock(3599.9), "59:59");
-        assert_eq!(fmt_clock(-3.0), "0:00");
-        assert_eq!(fmt_clock(f64::NAN), "0:00");
-    }
-
-    #[test]
-    fn ellipsize_truncates_long_text() {
-        use super::ellipsize;
-        assert_eq!(ellipsize("短标题 - 艺人"), "短标题 - 艺人");
-        let long = "曲".repeat(60);
-        let out = ellipsize(&long);
-        // 截到上限并带省略号
-        assert!(out.chars().count() <= super::TRAY_TEXT_MAX + 1);
-        assert!(out.ends_with('…'));
-    }
 }
