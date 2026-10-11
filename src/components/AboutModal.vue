@@ -57,9 +57,10 @@ async function copyMail(): Promise<void> {
     <div class="hero">
       <span class="logo">
         <svg viewBox="0 0 24 24">
-          <path d="M9.3 17.6V6.9l9.4-2v10.5" fill="none" stroke="#fff" stroke-width="1.9" stroke-linejoin="round" />
-          <circle cx="7" cy="17.7" r="2.5" fill="#fff" />
-          <circle cx="16.4" cy="15.6" r="2.5" fill="#fff" />
+          <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
+          <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
+          <circle cx="12" cy="12" r="3.4" fill="#fff" />
+          <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
         </svg>
       </span>
       <div>

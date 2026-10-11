@@ -101,6 +101,7 @@ src-tauri/
   examples/make_tmc.rs          # TMC 演示包生成 + 解包/网易云调试工具
   examples/make_beyond_tmc.rs   # 批量音频打包 TMC(元数据自动补齐)
 demo/                   # TMC / TMCA 演示包(make_tmc 生成)
+design/                 # 应用图标 SVG 源稿(手绘几何,零素材引用);改后用 npx tauri icon 重新生成全套
 TauriMusic-promo/       # 宣传素材
 ```
 

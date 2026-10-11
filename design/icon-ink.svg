@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- TauriMusic 应用图标 · 方案 A「墨夜胶片」
+       深暖墨底 + 陶土色黑胶 + 奶油纸唱贴:贴合应用默认的深色液态玻璃气质。
+       全部为手绘几何,无字体无素材引用,不存在版权问题。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2219"/>
+      <stop offset="1" stop-color="#191410"/>
+    </linearGradient>
+    <linearGradient id="disc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#da7850"/>
+      <stop offset="1" stop-color="#b05336"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="340" fill="url(#disc)"/>
+  <!-- 三道沟槽暗示黑胶质地 -->
+  <g fill="none" stroke="#5f2d1d" stroke-opacity="0.35" stroke-width="2.5">
+    <circle cx="512" cy="512" r="298"/>
+    <circle cx="512" cy="512" r="256"/>
+    <circle cx="512" cy="512" r="214"/>
+  </g>
+  <!-- 左上盘缘一抹高光:光掠过胶片的弧线 -->
+  <path d="M 207 458 A 310 310 0 0 1 458 207" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="26" stroke-linecap="round"/>
+  <circle cx="512" cy="512" r="118" fill="#f2efe7"/>
+  <circle cx="512" cy="512" r="20" fill="#191410"/>
+</svg>
