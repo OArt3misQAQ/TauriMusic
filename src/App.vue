@@ -72,10 +72,12 @@ function onPointerMove(e: PointerEvent): void {
 const isTrayPopup = getCurrentWindow().label === "tray";
 
 onMounted(() => {
+  // 主题与皮肤令牌两个窗口都需要(托盘面板靠同一份 localStorage 对齐外观)
+  initTheme();
+  initSkin();
   if (isTrayPopup) {
-    // 面板只需要皮肤/深浅色令牌(与主窗口共享 localStorage),状态靠事件广播
-    initTheme();
-    initSkin();
+    // 挂 tray-host 类让透明背景样式只作用于这个窗口
+    document.documentElement.classList.add("tray-host");
     return;
   }
   initWelcome();

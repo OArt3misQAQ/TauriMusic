@@ -122,14 +122,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 弹窗窗口本体透明,卡片自带圆角与投影;背景/皮肤令牌由共享的 localStorage 决定 */
-:global(html),
-:global(body),
-:global(#app) {
+/* 透明化只作用于托盘窗口:App.vue 给托盘窗口的 <html> 挂 tray-host 类,
+   不能用裸的 html/body 全局选择器——同包样式会漏进主窗口,把玻璃铬底打成透明 */
+:global(html.tray-host),
+:global(html.tray-host body),
+:global(html.tray-host #app) {
   background: transparent !important;
   overflow: hidden;
 }
-:global(body) {
+:global(html.tray-host body) {
   margin: 0;
 }
 
