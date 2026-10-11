@@ -68,7 +68,7 @@ async function finishWelcome(): Promise<void> {
           </li>
           <li>
             <b>音乐版权</b>
-            <span>请确保导入的音乐为你合法获得。因使用本应用产生的版权问题由使用者自行承担。</span>
+            <span>请确保导入的音乐为你合法获得;导出的音乐包内容仅限个人使用,分享所产生的法律风险由使用者自行承担,与 TauriMusic 无关。</span>
           </li>
         </ul>
 

@@ -68,6 +68,9 @@ const packingHint = computed(() => {
       <div v-if="exportState.packFailed" class="warn">
         {{ exportState.packFailed }} 首无法打包(文件缺失或被占用),已跳过
       </div>
+      <p class="note">
+        音乐包内容由你的本地曲库生成,请仅限个人使用;分享所产生的法律风险由使用者自行承担,与 TauriMusic 无关。
+      </p>
     </template>
 
     <!-- 落位中:把完整的音乐包写入所选位置 -->
