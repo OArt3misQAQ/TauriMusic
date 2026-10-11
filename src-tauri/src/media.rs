@@ -8,6 +8,8 @@
 //! SMTC 是 COM 组件:全部操作收敛在一条专用线程(启动即 CoInitializeEx),
 //! 命令经 channel 转发,避免各命令线程的 COM 套间问题。
 
+// PathBuf 仅 SMTC 消息(Windows)使用,非 Windows 编译时不存在
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::image::Image;
@@ -139,6 +141,9 @@ pub(crate) fn on_track(
     cover: Option<String>,
     duration: f64,
 ) {
+    // 非 Windows:duration 仅进 SMTC 消息,托盘不使用
+    #[cfg(not(windows))]
+    let _ = duration;
     #[cfg(windows)]
     if let Some(b) = app.try_state::<MediaBridge>() {
         if let Ok(g) = b.smtc.lock() {
