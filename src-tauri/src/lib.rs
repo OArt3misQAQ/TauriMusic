@@ -1330,7 +1330,7 @@ fn netease_enrich_blocking(
                     chunk
                         .iter()
                         .map(|t| {
-                            netease_lyric(client, &t.title, &t.artist)
+                            netease_lyric(client, &t.title, &t.artist, Some(t.duration))
                                 .map(|text| (text, "netease"))
                                 .or_else(|| {
                                     lrclib_lyric(
@@ -1457,17 +1457,33 @@ pub fn netease_client() -> reqwest::blocking::Client {
         .clone()
 }
 
-/// 归一化标签用于跨源比对:繁体转简体 + 小写 + 去空白(本地标签常见繁体/大小写差异)
-fn normalize_tag(s: &str) -> String {
+/// 繁体转简体(进程级单例转换器):normalize_tag 与现场版识别共用
+fn to_simplified(s: &str) -> String {
     use character_converter::CharacterConverter;
     static CONVERTER: std::sync::OnceLock<CharacterConverter> = std::sync::OnceLock::new();
-    let converter = CONVERTER.get_or_init(CharacterConverter::new);
-    converter
+    CONVERTER
+        .get_or_init(CharacterConverter::new)
         .traditional_to_simplified(s)
+}
+
+/// 归一化标签用于跨源比对:繁体转简体 + 小写 + 去空白(本地标签常见繁体/大小写差异)
+fn normalize_tag(s: &str) -> String {
+    to_simplified(s)
         .to_lowercase()
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect()
+}
+
+/// 标题是否带现场/演唱会标记:live 需独立成词(避免 Alive/Livin' 误判),
+/// 中文无词边界直接子串判。现场版与录音室版的时间轴完全不同,选错版歌词必错位
+fn title_is_live(s: &str) -> bool {
+    let norm = to_simplified(s).to_lowercase();
+    if norm.contains("现场") || norm.contains("演唱会") || norm.contains("实况") {
+        return true;
+    }
+    norm.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| w == "live")
 }
 
 /// 归一化后的双向包含比对
@@ -1585,38 +1601,94 @@ pub fn netease_album_cover(
 }
 
 /// 歌词:按歌名搜索,优先选艺人名能对上的结果(繁简/大小写归一化比对)
+/// 从网易云搜索结果挑最佳歌曲:艺人吻合为底,现场版标题与时长吻合加权。
+/// 纯函数便于单测:现场版歌曲若按首条盲取,常拿到录音室版(时间轴完全不同)
+fn pick_netease_song<'a>(
+    songs: &'a [serde_json::Value],
+    artist: &str,
+    duration: Option<f64>,
+    want_live: bool,
+) -> Option<&'a serde_json::Value> {
+    let mut best: Option<(u32, &serde_json::Value)> = None;
+    for s in songs {
+        let mut score = 0u32;
+        let artist_ok = s["artists"]
+            .as_array()
+            .map(|arr| {
+                arr.iter().any(|a| {
+                    a["name"]
+                        .as_str()
+                        .map(|n| artist_matches(artist, n))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if artist_ok {
+            score += 4;
+        }
+        if want_live && s["name"].as_str().map(title_is_live).unwrap_or(false) {
+            score += 3;
+        }
+        // 搜索接口的 duration 单位是毫秒
+        if let (Some(d), Some(t)) = (duration, s["duration"].as_f64()) {
+            if (d - t / 1000.0).abs() <= 3.0 {
+                score += 2;
+            }
+        }
+        if score > 0 && best.as_ref().map(|(b, _)| score > *b).unwrap_or(true) {
+            best = Some((score, s));
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
 pub fn netease_lyric(
     client: &reqwest::blocking::Client,
     title: &str,
     artist: &str,
+    duration: Option<f64>,
 ) -> Option<String> {
-    let v = netease_search(client, title, 1, 5)?;
-    let songs = v.pointer("/result/songs")?.as_array()?;
-    let pick = songs
-        .iter()
-        .find(|s| {
-            s["artists"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter().any(|a| {
-                        a["name"]
-                            .as_str()
-                            .map(|n| artist_matches(artist, n))
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .or_else(|| songs.first())?;
-    let id = pick["id"].as_i64()?;
-    let url = format!("https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=-1");
-    let resp = client.get(&url).send().ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let want_live = title_is_live(title);
+    // 现场版全名搜索常落空(各家括号后缀命名不一),补一条去括号搜索把两个版本都捞进候选
+    let mut keywords = vec![title.to_string()];
+    let stripped = strip_bracketed(title);
+    if want_live && !stripped.is_empty() && stripped != title {
+        keywords.push(stripped);
     }
-    let v = resp.json::<serde_json::Value>().ok()?;
-    let text = v.pointer("/lrc/lyric")?.as_str()?.trim().to_string();
-    (!text.is_empty()).then_some(text)
+    for kw in keywords {
+        let Some(v) = netease_search(client, &kw, 1, 10) else {
+            continue;
+        };
+        let Some(songs) = v.pointer("/result/songs").and_then(|x| x.as_array()) else {
+            continue;
+        };
+        let Some(pick) =
+            pick_netease_song(songs, artist, duration, want_live).or_else(|| songs.first())
+        else {
+            continue;
+        };
+        let Some(id) = pick["id"].as_i64() else {
+            continue;
+        };
+        let url = format!("https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=-1");
+        let Ok(resp) = client.get(&url).send() else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        if let Ok(v) = resp.json::<serde_json::Value>() {
+            if let Some(text) = v
+                .pointer("/lrc/lyric")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 // ===== LRCLIB 歌词兜底 + iTunes 封面兜底(公开接口,无需密钥) =====
@@ -1639,11 +1711,13 @@ pub fn generic_client() -> reqwest::blocking::Client {
         .clone()
 }
 
-/// 从 LRCLIB 搜索结果里挑最佳一条:艺人能对上才要,同步歌词优先、时长接近优先
+/// 从 LRCLIB 搜索结果里挑最佳一条:艺人能对上才要;
+/// 现场版标记优先于同步格式优先于时长吻合(时间轴错了同步歌词毫无意义)
 fn pick_lrclib_result(
     items: &[serde_json::Value],
     artist: &str,
     duration: Option<f64>,
+    want_live: bool,
 ) -> Option<String> {
     let mut best: Option<(u8, String)> = None;
     for it in items {
@@ -1665,6 +1739,9 @@ fn pick_lrclib_result(
             continue; // 纯音乐条目两字段皆空,跳过
         };
         let mut score = 0u8;
+        if want_live && it["trackName"].as_str().map(title_is_live).unwrap_or(false) {
+            score += 4; // 现场版标记是版本正确性的最强信号
+        }
         if synced.is_some() {
             score += 2; // 逐行同步歌词比纯文本更有价值
         }
@@ -1687,6 +1764,7 @@ pub fn lrclib_lyric(
     artist: &str,
     duration: Option<f64>,
 ) -> Option<String> {
+    let want_live = title_is_live(title);
     // 1) /api/get 精确匹配:LRCLIB 直接返回最贴合的一条(带时长时按秒对齐)
     let mut get = client
         .get("https://lrclib.net/api/get")
@@ -1713,17 +1791,32 @@ pub fn lrclib_lyric(
             }
         }
     }
-    // 2) /api/search:先「歌名+艺人」,再退化为仅歌名(结果里按艺人过滤挑最佳)
-    for query in [
+    // 2) /api/search:先「歌名+艺人」,现场版再补去括号变体(把两个版本都捞进候选),最后仅歌名
+    let mut queries: Vec<Vec<(&str, String)>> = vec![
         vec![
             ("track_name", title.to_string()),
             ("artist_name", artist.to_string()),
         ],
         vec![("q", title.to_string())],
-    ] {
+    ];
+    let stripped = if want_live {
+        strip_bracketed(title)
+    } else {
+        String::new()
+    };
+    if !stripped.is_empty() && stripped != title {
+        queries.insert(
+            1,
+            vec![
+                ("track_name", stripped),
+                ("artist_name", artist.to_string()),
+            ],
+        );
+    }
+    for query in &queries {
         let resp = client
             .get("https://lrclib.net/api/search")
-            .query(&query)
+            .query(query)
             .send()
             .ok()?;
         if !resp.status().is_success() {
@@ -1732,8 +1825,10 @@ pub fn lrclib_lyric(
         let Ok(v) = resp.json::<serde_json::Value>() else {
             continue;
         };
-        let items = v.as_array()?;
-        if let Some(text) = pick_lrclib_result(items, artist, duration) {
+        let Some(items) = v.as_array() else {
+            continue;
+        };
+        if let Some(text) = pick_lrclib_result(items, artist, duration, want_live) {
             return Some(text);
         }
     }
@@ -1985,22 +2080,35 @@ pub fn kuwo_lyric(
         } else {
             matched
         };
-        // 优先取时长与本地文件吻合的候选,无吻合时退回首个
-        let pick = pool
-            .iter()
-            .copied()
-            .find(|s| {
-                match (
-                    duration,
-                    s["DURATION"]
-                        .as_str()
-                        .and_then(|d| d.trim().parse::<f64>().ok()),
-                ) {
-                    (Some(d), Some(k)) => (d - k).abs() <= 5.0,
-                    _ => false,
+        // 评分挑选:现场版标记优先于时长吻合;全 0 分退回首个(与旧行为一致)
+        let want_live = title_is_live(title);
+        let mut pick = pool.first().copied();
+        let mut best = 0u32;
+        for s in pool.iter().copied() {
+            let mut score = 0u32;
+            if want_live
+                && s["SONGNAME"]
+                    .as_str()
+                    .map(|n| title_is_live(&html_unescape(n)))
+                    .unwrap_or(false)
+            {
+                score += 3;
+            }
+            if let (Some(d), Some(k)) = (
+                duration,
+                s["DURATION"]
+                    .as_str()
+                    .and_then(|x| x.trim().parse::<f64>().ok()),
+            ) {
+                if (d - k).abs() <= 5.0 {
+                    score += 2;
                 }
-            })
-            .or_else(|| pool.first().copied());
+            }
+            if score > best {
+                best = score;
+                pick = Some(s);
+            }
+        }
         let Some(pick) = pick else { continue };
         let Some(rid) = pick["MUSICRID"].as_str() else {
             continue;
@@ -3535,18 +3643,21 @@ mod tests {
                 "syncedLyrics": "[00:01.00] line", "plainLyrics": "dup"}),
         ];
         assert_eq!(
-            pick_lrclib_result(&items, "beyond", Some(300.0)).as_deref(),
+            pick_lrclib_result(&items, "beyond", Some(300.0), false).as_deref(),
             Some("[00:01.00] line")
         );
         // 查询艺人与所有候选都对不上 → 不挑任何一条
-        assert_eq!(pick_lrclib_result(&items, "陈奕迅", Some(300.0)), None);
+        assert_eq!(
+            pick_lrclib_result(&items, "陈奕迅", Some(300.0), false),
+            None
+        );
         // 繁简归一化后能对上传统写法的艺人名
         let t2 = vec![
             serde_json::json!({"artistName": "陳奕迅", "duration": 200.0,
             "syncedLyrics": "[00:02.00] y", "plainLyrics": ""}),
         ];
         assert_eq!(
-            pick_lrclib_result(&t2, "陈奕迅", None).as_deref(),
+            pick_lrclib_result(&t2, "陈奕迅", None, false).as_deref(),
             Some("[00:02.00] y")
         );
     }
@@ -3598,6 +3709,68 @@ mod tests {
         assert_eq!(
             kuwo_keywords("普通标题", "艺人"),
             vec!["普通标题 艺人".to_string()]
+        );
+    }
+
+    #[test]
+    fn title_is_live_distinguishes_live_markers_from_lookalikes() {
+        use super::title_is_live;
+        // 常见现场版标记:英文括号后缀 / 中文标记 / 繁体
+        assert!(title_is_live("朋友们的酒 (Live in China)"));
+        assert!(title_is_live("Song (Live)"));
+        assert!(title_is_live("海阔天空（现场版）"));
+        assert!(title_is_live("海阔天空（現場）"));
+        assert!(title_is_live("演唱会 2023"));
+        assert!(title_is_live("Live版"));
+        // 误判防线:live 必须独立成词
+        assert!(!title_is_live("Alive"));
+        assert!(!title_is_live("Livin' on a Prayer"));
+        assert!(!title_is_live("普通标题"));
+    }
+
+    #[test]
+    fn pick_netease_song_prefers_live_and_duration_match() {
+        use super::pick_netease_song;
+        use serde_json::json;
+        let studio = json!({"id": 1, "name": "朋友们的酒", "duration": 240000, "artists": [{"name": "李晓杰"}]});
+        let live = json!({"id": 2, "name": "朋友们的酒 (Live in China)", "duration": 280000, "artists": [{"name": "李晓杰"}]});
+        let songs = vec![studio, live];
+        // 现场版请求:live 标记加权压过先出现的录音室版
+        assert_eq!(
+            pick_netease_song(&songs, "李晓杰", None, true).unwrap()["id"].as_i64(),
+            Some(2)
+        );
+        // 非现场版请求:同分取先出现的(与旧的「首个艺人吻合」行为一致)
+        assert_eq!(
+            pick_netease_song(&songs, "李晓杰", None, false).unwrap()["id"].as_i64(),
+            Some(1)
+        );
+        // 本地时长 280s 与 live 吻合:即使不识别 live 也能靠时长纠出版本
+        assert_eq!(
+            pick_netease_song(&songs, "李晓杰", Some(280.0), false).unwrap()["id"].as_i64(),
+            Some(2)
+        );
+        // 艺人全对不上且无其他得分项:宁缺毋滥
+        let other = json!({"id": 3, "name": "朋友们的酒", "artists": [{"name": "别人"}]});
+        assert!(pick_netease_song(std::slice::from_ref(&other), "李晓杰", None, false).is_none());
+    }
+
+    #[test]
+    fn pick_lrclib_result_live_beats_synced_studio() {
+        use super::pick_lrclib_result;
+        use serde_json::json;
+        let studio = json!({"artistName": "李晓杰", "trackName": "朋友们的酒", "syncedLyrics": "[00:01]a", "plainLyrics": "a", "duration": 240.0});
+        let live = json!({"artistName": "李晓杰", "trackName": "朋友们的酒 (Live)", "syncedLyrics": "", "plainLyrics": "b", "duration": 280.0});
+        let items = vec![studio, live];
+        // 现场版请求:live 纯文本胜过录音室同步歌词——版本错了时间轴同步毫无意义
+        assert_eq!(
+            pick_lrclib_result(&items, "李晓杰", Some(280.0), true).unwrap(),
+            "b"
+        );
+        // 非现场版请求:同步格式优先
+        assert_eq!(
+            pick_lrclib_result(&items, "李晓杰", Some(280.0), false).unwrap(),
+            "[00:01]a"
         );
     }
 

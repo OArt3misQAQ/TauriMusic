@@ -33,17 +33,18 @@ fn main() {
         println!("已解包 {} -> {}", src.display(), dest.display());
         return;
     }
-    // 调试用:make_tmc netease <标题> <艺人> 验证在线匹配算法
+    // 调试用:make_tmc netease <标题> <艺人> [时长秒] 验证在线匹配算法
     if args.get(1).map(|s| s == "netease").unwrap_or(false) {
         let title = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let artist = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let dur: Option<f64> = args.get(4).and_then(|s| s.parse().ok());
         let client = tauri_music_lib::netease_client();
         println!(
             "封面: {:?}",
             tauri_music_lib::netease_album_cover(&client, title, artist, title)
                 .map(|u| u[..60].to_string())
         );
-        match tauri_music_lib::netease_lyric(&client, title, artist) {
+        match tauri_music_lib::netease_lyric(&client, title, artist, dur) {
             Some(l) => println!("歌词(前120字): {}", l.chars().take(120).collect::<String>()),
             None => println!("歌词: 未找到"),
         }
