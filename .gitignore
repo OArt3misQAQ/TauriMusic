@@ -37,3 +37,6 @@ demo/
 # 打包产物(含版权音频,严禁入库)
 beyond/
 TauriMusic-promo/
+
+# 安全扫描工具的本地状态,不入库
+.mimosa/
