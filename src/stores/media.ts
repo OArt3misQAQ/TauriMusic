@@ -1,6 +1,6 @@
 import { watch } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { player, current, toggle, next, prev } from "./player";
+import { player, current, toggle, next, prev, seek } from "./player";
 import { api } from "../api";
 
 /**
@@ -23,9 +23,24 @@ function broadcast(): void {
   });
 }
 
+let bridgeInited = false;
+
 export function initMediaBridge(): void {
+  if (bridgeInited) return; // 与 initTheme/initSkin 同理:重挂载/HMR 时监听器不能叠加
+  bridgeInited = true;
   // 托盘面板/系统控制中心的按钮 → 播放器动作
   void listen<string>("media://action", (e) => {
+    // 带参动作:进度拖拽 "seek:<秒>"(托盘进度条可拖)
+    if (e.payload.startsWith("seek:")) {
+      const t = Number(e.payload.slice(5));
+      if (Number.isFinite(t)) {
+        seek(t);
+        // position 的广播有 ≥1s 的节流,seek 幅度小或暂停状态时不会触发,
+        // 托盘会一直停在拖拽预览值——动作执行完立即广播一次兜底
+        broadcast();
+      }
+      return;
+    }
     switch (e.payload) {
       case "toggle":
         toggle();

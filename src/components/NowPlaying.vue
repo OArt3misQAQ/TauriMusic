@@ -2,7 +2,18 @@
 import { computed, ref, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, type LyricLine } from "../api";
-import { player, current, toggle, next, prev, seek, setVolume, fmtTime } from "../stores/player";
+import {
+  player,
+  current,
+  toggle,
+  next,
+  prev,
+  seek,
+  fmtTime,
+  upcomingTracks,
+  jumpToQueueIndex,
+  removeFromQueue,
+} from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
 
@@ -15,7 +26,6 @@ const bgStyle = computed(() => ({
   "--np-cover": coverUrl.value ? `url("${coverUrl.value}")` : "none",
 }));
 const progress = computed(() => (player.duration > 0 ? (player.position / player.duration) * 100 : 0));
-const volFill = computed(() => `${player.volume * 100}%`);
 
 const synced = ref<LyricLine[] | null>(null);
 const plain = ref<string | null>(null);
@@ -95,13 +105,27 @@ function close(): void {
   ui.nowPlayingOpen = false;
 }
 
+/* 播放队列抽屉:展示本轮循环的真实播放顺序(随机模式即洗牌袋剩余顺序)。
+   computed 依赖 queue/index/mode,切歌/移除后自动刷新 */
+const queueOpen = ref(false);
+const queueList = computed(() => (queueOpen.value ? upcomingTracks() : []));
+
+/* 播放页收起时顺带收起队列,下次打开是干净状态 */
+watch(
+  () => ui.nowPlayingOpen,
+  (open) => {
+    if (!open) queueOpen.value = false;
+  },
+);
+
 function onSeek(e: Event): void {
   seek(Number((e.target as HTMLInputElement).value));
 }
 </script>
 
 <template>
-  <div class="np" :style="bgStyle">
+  <!-- queue-open:队列抽屉打开时,右上角收起箭头让位到抽屉左侧 -->
+  <div class="np" :class="{ 'queue-open': queueOpen }" :style="bgStyle">
     <button class="close" title="关闭" @click="close">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m6 9.2 6 6 6-6" />
@@ -145,44 +169,37 @@ function onSeek(e: Event): void {
           <ModeIcon class="t-btn" />
         </div>
         <div class="zone mid">
+          <!-- 传输三键按 Apple Music 全屏播放器语言重绘:双三角步进曲 + 实心圆播放键 -->
           <button class="t-btn" title="上一曲" @click="prev()">
-            <svg viewBox="0 0 24 24">
-              <path d="M7 5.8v12.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
-              <path d="M18.5 6.3v11.4L9.4 12z" fill="currentColor" />
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M11.4 6.4v11.2L3.6 12z" />
+              <path d="M20 6.4v11.2L12.2 12z" />
             </svg>
           </button>
           <button class="t-btn play" :title="player.playing ? '暂停' : '播放'" @click="toggle()">
+            <!-- 播放标本身即设计:圆角三角/双粗圆角条,比步进曲大一整档,不套任何底盘 -->
             <svg v-if="!player.playing" viewBox="0 0 24 24">
-              <path d="M8.2 5.5v13L19 12z" fill="currentColor" />
+              <path d="M8 5.4v13.2L19.2 12z" fill="currentColor" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" />
             </svg>
-            <svg v-else viewBox="0 0 24 24">
-              <path d="M7.6 5.5h3.3v13H7.6zM13.2 5.5h3.3v13h-3.3z" fill="currentColor" />
+            <svg v-else viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6.6" y="4.8" width="4" height="14.4" rx="1.5" />
+              <rect x="13.4" y="4.8" width="4" height="14.4" rx="1.5" />
             </svg>
           </button>
           <button class="t-btn" title="下一曲" @click="next()">
-            <svg viewBox="0 0 24 24">
-              <path d="M17 5.8v12.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
-              <path d="M5.5 6.3v11.4L14.6 12z" fill="currentColor" />
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12.6 6.4v11.2L20.4 12z" />
+              <path d="M4 6.4v11.2L11.8 12z" />
             </svg>
           </button>
         </div>
         <div class="zone right">
-          <div class="np-volume">
-            <svg class="vol-ico" viewBox="0 0 24 24">
-              <path d="M11.2 4.8 6.8 8.3H4v7.4h2.8l4.4 3.5z" fill="currentColor" />
-              <path d="M14.5 9.3a3.9 3.9 0 0 1 0 5.4M17 7a7.2 7.2 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          <!-- 音量只保留顶栏一处(与传输控件同属全局),播放页底部不再重复 -->
+          <button class="t-btn" :class="{ on: queueOpen }" title="播放队列" @click="queueOpen = !queueOpen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M4 6h16M4 12h16M4 18h9" />
             </svg>
-            <input
-              class="range vol"
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              :value="player.volume"
-              :style="{ '--fill': volFill }"
-              @input="setVolume(Number(($event.target as HTMLInputElement).value))"
-            />
-          </div>
+          </button>
         </div>
       </div>
       <div class="seek">
@@ -200,13 +217,56 @@ function onSeek(e: Event): void {
         <span class="time">{{ fmtTime(player.duration) }}</span>
       </div>
     </div>
+
+    <!-- 播放队列抽屉:本轮循环的真实播放顺序;点行切歌,悬停移除(不删文件) -->
+    <Transition name="drawer">
+      <aside v-if="queueOpen" class="queue">
+        <header class="q-head">
+          <span class="q-title">播放队列<span class="q-count">{{ queueList.length + (current ? 1 : 0) }} 首</span></span>
+          <button class="q-close" title="收起" @click="queueOpen = false">
+            <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+          </button>
+        </header>
+        <div class="q-body">
+          <div v-if="current" class="q-row now" :class="{ paused: !player.playing }">
+            <span class="q-eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="q-meta">
+              <span class="q-t">{{ current.title }}</span>
+              <span class="q-a">{{ current.artist }}</span>
+            </span>
+            <span class="q-dur">{{ fmtTime(player.duration) }}</span>
+          </div>
+          <div class="q-sep">接下来</div>
+          <TransitionGroup name="qlist" tag="div" class="q-list">
+            <div
+              v-for="(item, i) in queueList"
+              :key="item.queueIndex"
+              class="q-row"
+              @click="jumpToQueueIndex(item.queueIndex)"
+            >
+              <span class="q-idx">{{ i + 1 }}</span>
+              <span class="q-meta">
+                <span class="q-t">{{ item.track.title }}</span>
+                <span class="q-a">{{ item.track.artist }}</span>
+              </span>
+              <span class="q-dur">{{ fmtTime(item.track.duration) }}</span>
+              <button class="q-remove" title="从队列移除" @click.stop="removeFromQueue(item.queueIndex)">
+                <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+              </button>
+            </div>
+          </TransitionGroup>
+          <div v-if="!queueList.length" class="q-empty">{{ current ? "本轮播放到这里就结束啦" : "队列还是空的" }}</div>
+        </div>
+      </aside>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
 .np {
-  /* 播放页局部令牌:纸质皮肤在 style.css 末尾整组覆写(印刷节目单) */
-  --np-bg: #242426;
+  /* 播放页局部令牌:纸质皮肤在 style.css 末尾整组覆写(印刷节目单)。
+     底色压到墨级——播放页是全应用最大的色块,灰半档全应用就"黑不正" */
+  --np-bg: #1d1e20;
   --np-fg: #ffffff;
   --np-fg-2: rgba(255, 255, 255, 0.62);
   --np-fg-3: rgba(255, 255, 255, 0.42);
@@ -260,7 +320,14 @@ function onSeek(e: Event): void {
   color: var(--np-close-fg);
   background: var(--np-close-bg);
   backdrop-filter: blur(10px);
-  transition: background 0.25s var(--ease-out-soft), transform 0.35s var(--ease-spring);
+  transition:
+    right 0.38s var(--ease-out-soft),
+    background 0.25s var(--ease-out-soft),
+    transform 0.35s var(--ease-spring);
+}
+/* 队列抽屉打开:收起箭头平滑让位到抽屉左侧(宽度与抽屉一致) */
+.np.queue-open .close {
+  right: calc(min(320px, 46%) + 18px);
 }
 .close:hover {
   background: var(--np-close-hover);
@@ -387,29 +454,7 @@ function onSeek(e: Event): void {
   gap: 8px;
   padding: 10px 0 26px;
 }
-/* 音量:与顶栏同款控件,在播放页深色底上用白色轨道/滑块 */
-.np-volume {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.np-volume .vol-ico {
-  width: 16px;
-  height: 16px;
-  color: var(--np-fg-soft);
-}
-.np-volume .vol {
-  width: 130px;
-  background: linear-gradient(
-      to right,
-      var(--np-fg) var(--fill, 0%),
-      var(--np-track) var(--fill, 0%)
-  );
-}
-.np-volume .range::-webkit-slider-thumb {
-  background: var(--np-thumb);
-}
-/* 控制行:与进度条同宽同列——三区(模式键/播放控制/音量)都在进度条的宽度内分布,
+/* 控制行:与进度条同宽同列——左(模式键)/中(播放控制)/右(队列)三区分布,
    不再被 stretch 拉到窗口两角;窄窗口时左右区让位给中间的控制组 */
 .controls {
   display: grid;
@@ -452,19 +497,31 @@ function onSeek(e: Event): void {
   width: 21px;
   height: 21px;
 }
-.t-btn.play {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--np-btn-bg);
-  backdrop-filter: blur(8px);
-}
-.t-btn.play:hover {
-  background: var(--np-btn-bg-hover);
-}
-.t-btn.play svg {
+.zone.mid .t-btn svg {
   width: 26px;
   height: 26px;
+}
+/* 播放标必须比上面通配更大一档:这里用 .zone.mid 前缀压过通配的特异性,
+   否则 22px 会盖掉大标尺寸——上次"看不出大"就是这个原因 */
+.zone.mid .t-btn.play svg {
+  width: 42px;
+  height: 42px;
+}
+/* 播放键:超级大标——不套圆盘,靠与步进曲一整档的尺寸差当主角;
+   参考做法里暂停就是两根粗圆角条,播放是一颗圆角大三角 */
+.t-btn.play {
+  width: 60px;
+  height: 50px;
+}
+.t-btn.play:hover {
+  transform: scale(1.08);
+}
+.t-btn.play:active {
+  transform: scale(0.95);
+}
+.t-btn.play svg {
+  width: 38px;
+  height: 38px;
 }
 
 .seek {
@@ -489,6 +546,238 @@ function onSeek(e: Event): void {
 }
 .seek .range::-webkit-slider-thumb {
   background: var(--np-thumb);
+}
+
+/* ===== 播放队列抽屉:右侧滑入的本轮循环面板 =====
+   材质跟随播放页:玻璃下是磨纱暗抽屉,纸质下由末尾的印刷插页规则接管 */
+.queue {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6; /* 高于右上角的收起按钮,抽屉自带关闭键 */
+  width: 320px;
+  max-width: 46%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(13, 14, 17, 0.66);
+  backdrop-filter: blur(30px) saturate(1.4);
+  -webkit-backdrop-filter: blur(30px) saturate(1.4);
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+}
+.q-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 18px 12px;
+}
+.q-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--np-fg);
+}
+.q-count {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--np-fg-3);
+}
+.q-close {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--np-fg-2);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.q-close:hover {
+  background: var(--np-btn-bg);
+  color: var(--np-fg);
+}
+.q-close svg {
+  width: 13px;
+  height: 13px;
+}
+/* 抽屉自持一面光斑:它的 z 层盖过播放页扫光,不自己发光就是一块"照不亮的死玻璃";
+   z -1 让光落在抽屉底、行列表之下,与侧栏的镜面高光同一套语言 */
+html.glass .np .queue::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  background: radial-gradient(
+    420px circle at var(--pointer-x, -999px) var(--pointer-y, -999px),
+    rgba(255, 255, 255, 0.09),
+    rgba(255, 255, 255, 0) 65%
+  );
+}
+.q-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 16px;
+  scrollbar-width: none;
+}
+.q-body::-webkit-scrollbar {
+  display: none;
+}
+.q-list {
+  position: relative; /* 移除动画时离场行绝对定位,其余行平滑补位 */
+}
+.q-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+.q-row:hover {
+  background: var(--np-btn-bg-hover);
+}
+.q-row.now {
+  cursor: default;
+  background: var(--np-btn-bg);
+}
+.q-idx {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  font-size: 11px;
+  color: var(--np-fg-3);
+  font-variant-numeric: tabular-nums;
+}
+/* 正在播放行:三根跳动的音量条,暂停时定格 */
+.q-eq {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+}
+.q-eq i {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: q-eq 0.9s ease-in-out infinite;
+}
+.q-eq i:nth-child(2) {
+  animation-delay: 0.28s;
+}
+.q-eq i:nth-child(3) {
+  animation-delay: 0.55s;
+}
+@keyframes q-eq {
+  0%,
+  100% {
+    height: 4px;
+  }
+  50% {
+    height: 13px;
+  }
+}
+.q-row.now.paused .q-eq i {
+  animation-play-state: paused;
+}
+.q-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.q-t {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--np-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.q-row.now .q-t {
+  color: var(--np-fg-strong);
+}
+.q-a {
+  font-size: 10.5px;
+  color: var(--np-fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.q-dur {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--np-fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.q-remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--np-fg-3);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.q-remove svg {
+  width: 11px;
+  height: 11px;
+}
+.q-row:hover .q-remove {
+  opacity: 1;
+}
+.q-remove:hover {
+  background: var(--np-btn-bg-hover);
+  color: var(--danger);
+}
+.q-sep {
+  padding: 14px 10px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--np-fg-mute);
+}
+.q-empty {
+  padding: 28px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--np-fg-mute);
+}
+/* 抽屉滑入/列表增删的过渡 */
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 0.38s var(--ease-out-soft), opacity 0.28s ease;
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(48px);
+  opacity: 0;
+}
+.qlist-move {
+  transition: transform 0.3s var(--ease-out-soft);
+}
+.qlist-enter-active {
+  transition: opacity 0.25s ease, transform 0.3s var(--ease-out-soft);
+}
+.qlist-leave-active {
+  position: absolute;
+  width: calc(100% - 20px);
+  transition: opacity 0.2s ease, transform 0.3s var(--ease-out-soft);
+}
+.qlist-enter-from,
+.qlist-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
 }
 
 /* ===== 纸质皮肤:播放页变"印刷节目单"——纸底、墨字、衬线歌词、封面装裱 ===== */
@@ -532,10 +821,28 @@ html[data-skin="paper"] .np .art {
   border: 1px solid var(--ink);
   box-shadow: var(--paper-shadow);
 }
-html[data-skin="paper"] .np .t-btn.play {
-  border: 1px solid var(--ink);
-}
 html[data-skin="paper"] .np .close {
   border: 1px solid var(--ink);
+}
+/* 队列抽屉:纸质下变印刷插页——纸面 + 墨线,去掉玻璃磨纱 */
+html[data-skin="paper"] .np .queue {
+  background: var(--bg-2);
+  border-left: 1px solid var(--ink);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-skin="paper"] .np .q-row:hover {
+  background: var(--hover);
+}
+html[data-skin="paper"] .np .q-row.now {
+  background: var(--active);
+}
+html[data-skin="paper"] .np .q-close:hover,
+html[data-skin="paper"] .np .q-remove:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+html[data-skin="paper"] .np .q-remove:hover {
+  color: var(--danger);
 }
 </style>

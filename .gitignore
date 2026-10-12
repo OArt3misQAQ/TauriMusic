@@ -40,3 +40,10 @@ TauriMusic-promo/
 
 # 安全扫描工具的本地状态,不入库
 .mimosa/
+
+# 本地工具状态,不入库
+.zcode/
+.zcodeignore
+
+# 宣传页源码(仅本地展示,不入库)
+web/

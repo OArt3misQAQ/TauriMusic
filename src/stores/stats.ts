@@ -124,8 +124,12 @@ function armFlush(): void {
   flushTimer = window.setInterval(() => void flush(), 20_000);
 }
 
+let statsInited = false;
+
 /** 应用启动时接线:监听播放状态、定时冲刷、页面隐藏兜底 */
 export function initStats(): void {
+  if (statsInited) return; // 重挂载/HMR 时监听器不能叠加
+  statsInited = true;
   watch(
     () => player.playing,
     (playing) => {

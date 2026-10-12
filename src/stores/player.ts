@@ -51,7 +51,6 @@ export const current = computed<Track | null>(() => player.queue[player.index] ?
 const PREV_RESTART_THRESHOLD = 3;
 
 let audio: HTMLAudioElement | null = null;
-let raf = 0;
 /** 连续加载失败计数,成功播放后清零(防全坏队列无限跳曲) */
 let errorStreak = 0;
 
@@ -106,23 +105,21 @@ function ensureAudio(): HTMLAudioElement {
   audio = new Audio();
   audio.volume = Math.min(1, Math.max(0, player.volume));
 
-  const tick = (): void => {
+  // 进度采集用 timeupdate 事件:后台媒体任务不受页面可见性节流,
+  // 窗口最小化/隐藏到托盘后仍持续派发。旧实现用 rAF,WebView2 在
+  // 隐藏窗口停发 rAF,position 冻结 → 托盘/SMTC 全部假死(长跑大坑)
+  audio.addEventListener("timeupdate", () => {
     if (audio && !audio.paused) {
-      // ~5Hz 更新足够 UI 使用,避免每帧 60 次触发全链路响应式更新
       const t = audio.currentTime;
       if (Math.abs(t - player.position) > 0.2) player.position = t;
-      raf = requestAnimationFrame(tick);
     }
-  };
+  });
   audio.addEventListener("play", () => {
     player.playing = true;
     errorStreak = 0;
-    cancelAnimationFrame(raf);
-    raf = requestAnimationFrame(tick);
   });
   audio.addEventListener("pause", () => {
     player.playing = false;
-    cancelAnimationFrame(raf);
     if (audio) player.position = audio.currentTime;
   });
   audio.addEventListener("ended", () => onEnded());
@@ -300,6 +297,70 @@ export function setVolume(v: number): void {
 export function cycleMode(): void {
   const i = MODE_ORDER.indexOf(player.mode);
   setMode(MODE_ORDER[(i + 1) % MODE_ORDER.length]);
+}
+
+/** 播放队列面板:按"真实播放顺序"列出本轮循环接下来的曲目。
+ *  随机模式 = 洗牌袋的剩余顺序(整袋播完前不会重复);
+ *  顺序播放不回卷;循环模式转一圈。袋子只随 queue/index/mode 变动,
+ *  面板的 computed 依赖这三者即可与真实播放顺序保持一致 */
+export function upcomingTracks(): { track: Track; queueIndex: number }[] {
+  const q = player.queue;
+  const n = q.length;
+  if (n === 0) return [];
+  const cur = player.index;
+  if (player.mode === "shuffle") {
+    if (bagQueue !== q || bag.length === 0) {
+      // 袋子还没建(队列刚替换/还没播过下一曲):真实顺序未定,先按队列顺序展示
+      return q.map((track, i) => ({ track, queueIndex: i })).filter((x) => x.queueIndex !== cur);
+    }
+    return [...bag]
+      .reverse()
+      .filter((i) => i !== cur && i >= 0 && i < n)
+      .map((i) => ({ track: q[i], queueIndex: i }));
+  }
+  if (cur < 0) {
+    return q.map((track, i) => ({ track, queueIndex: i }));
+  }
+  const out: { track: Track; queueIndex: number }[] = [];
+  for (let k = 1; k < n; k++) {
+    const i = (cur + k) % n;
+    if (player.mode === "seq" && i < cur) break; // 顺序播放播到队尾即停,不回卷
+    out.push({ track: q[i], queueIndex: i });
+  }
+  return out;
+}
+
+/** 跳到队列中的某一首(队列面板点选)。计入播放历史,"上一曲"语义保持正确 */
+export function jumpToQueueIndex(i: number): void {
+  const q = player.queue;
+  if (i < 0 || i >= q.length || i === player.index) return;
+  pushHistory(player.index);
+  // 随机模式:被点到的曲子必须从洗牌袋剔除,否则本轮还会再抽到它
+  if (player.mode === "shuffle" && bagQueue === q) {
+    bag = bag.filter((x) => x !== i);
+  }
+  player.index = i;
+  load(q[i]);
+}
+
+/** 从队列中移除某一首(不删文件)。正在播的不可移除;
+ *  洗牌袋必须同步修正——否则袋里留着失效下标,后续随机会抽到空曲 */
+export function removeFromQueue(i: number): void {
+  const q = player.queue;
+  const n = q.length;
+  if (i < 0 || i >= n || n <= 1 || i === player.index) return;
+  const oldRef = q;
+  player.queue = q.filter((_, k) => k !== i);
+  if (i < player.index) player.index -= 1;
+  // 历史里的下标同步左移,并剔除被移除曲自身,否则"上一曲"会回到错误的歌
+  playHistory = playHistory
+    .filter((h) => h !== i)
+    .map((h) => (h > i ? h - 1 : h));
+  if (bagQueue === oldRef) {
+    // 袋子还对应旧队列:剔除被移除的下标,并把大于它的整体左移一号,延续本轮
+    bag = bag.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
+    bagQueue = player.queue;
+  }
 }
 
 export function fmtTime(s: number): string {

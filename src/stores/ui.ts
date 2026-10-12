@@ -1,4 +1,4 @@
-import { ref, reactive, watchEffect } from "vue";
+import { ref, reactive, watchEffect, effectScope } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { StorageKeys, storageGetString, storageRemove, storageSet } from "./storage";
 
@@ -105,6 +105,11 @@ export function setThemeMode(mode: ThemeMode): void {
 
 let themeInited = false;
 
+// 应用级副作用必须挂 detached scope:watchEffect 默认绑定创建时的组件实例,
+// App.vue 重挂载/HMR 后实例销毁、effect 失活,而模块级守卫又会阻止重新挂载,
+// 结果是 html 上的 dark/glass 类冻结在旧值——皮肤/主题切换看起来完全失效
+const uiScope = effectScope(true);
+
 export function initTheme(): void {
   if (themeInited) return; // HMR/重复调用防抖,避免监听与 effect 叠加
   themeInited = true;
@@ -123,15 +128,25 @@ export function initTheme(): void {
     systemDark.value = prefersDark();
   });
 
-  watchEffect(() => {
-    ui.dark = ui.themeMode === "dark" || (ui.themeMode === "system" && systemDark.value);
-    document.documentElement.classList.toggle("dark", ui.dark);
-    // 原生窗口边框/标题区颜色同步;"跟随系统"交还给系统
-    try {
-      void getCurrentWindow().setTheme(ui.themeMode === "system" ? null : ui.themeMode);
-    } catch {
-      /* 浏览器调试环境无窗口 */
-    }
+  // 托盘面板是另一个 WebView:主窗口切换主题时靠 storage 事件同步过来。
+  // storage 事件只在"别的文档"里触发,写入方自己收不到,没有回声问题
+  window.addEventListener("storage", (e) => {
+    if (e.key !== StorageKeys.theme) return;
+    const v = e.newValue;
+    if (v === "light" || v === "dark" || v === "system") ui.themeMode = v;
+  });
+
+  uiScope.run(() => {
+    watchEffect(() => {
+      ui.dark = ui.themeMode === "dark" || (ui.themeMode === "system" && systemDark.value);
+      document.documentElement.classList.toggle("dark", ui.dark);
+      // 原生窗口边框/标题区颜色同步;"跟随系统"交还给系统
+      try {
+        void getCurrentWindow().setTheme(ui.themeMode === "system" ? null : ui.themeMode);
+      } catch {
+        /* 浏览器调试环境无窗口 */
+      }
+    });
   });
 }
 
@@ -141,12 +156,25 @@ export function setSkin(skin: Skin): void {
   storageSet(StorageKeys.skin, skin);
 }
 
+let skinInited = false;
+
 export function initSkin(): void {
+  if (skinInited) return; // 与 initTheme 同理:HMR/重复调用防抖,监听只挂一次
+  skinInited = true;
   const saved = storageGetString(StorageKeys.skin, "glass");
   ui.skin = saved === "paper" ? "paper" : "glass";
-  watchEffect(() => {
-    // 玻璃材质仅在液态玻璃皮肤下挂载(纸质为纸面材质,无玻璃规则)
-    document.documentElement.dataset.skin = ui.skin;
-    document.documentElement.classList.toggle("glass", ui.skin === "glass");
+
+  // 皮肤同样跨窗口同步(见 initTheme 里的说明)
+  window.addEventListener("storage", (e) => {
+    if (e.key !== StorageKeys.skin) return;
+    ui.skin = e.newValue === "paper" ? "paper" : "glass";
+  });
+
+  uiScope.run(() => {
+    watchEffect(() => {
+      // 玻璃材质仅在液态玻璃皮肤下挂载(纸质为纸面材质,无玻璃规则)
+      document.documentElement.dataset.skin = ui.skin;
+      document.documentElement.classList.toggle("glass", ui.skin === "glass");
+    });
   });
 }

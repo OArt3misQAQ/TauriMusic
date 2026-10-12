@@ -26,6 +26,8 @@ const volFill = computed(() => `${player.volume * 100}%`);
 <template>
   <!-- deep: 整个顶栏都是拖拽区,按钮/滑杆等可点击控件自动豁免(Tauri 2.12 drag.js 规则) -->
   <header class="topbar" data-tauri-drag-region="deep">
+    <!-- 播放页打开时的烟熏染色层:白色玻璃淡出、它淡入,顶栏随之融进深色播放页 -->
+    <i class="np-tint" aria-hidden="true"></i>
     <div class="brand">
       <span class="logo">
         <svg viewBox="0 0 24 24">
@@ -38,7 +40,8 @@ const volFill = computed(() => `${player.volume * 100}%`);
       <span class="name">TauriMusic</span>
     </div>
 
-    <div class="center">
+    <!-- np-open:全屏播放页已展开,传输控件动画收起,歌框成为主角滑向中央 -->
+    <div class="center" :class="{ 'np-open': ui.nowPlayingOpen && current }">
       <div class="controls">
         <ModeIcon class="t-btn" hint-dir="below" />
         <button class="t-btn big" title="上一曲" :disabled="!current" @click="prev()">
@@ -63,16 +66,30 @@ const volFill = computed(() => `${player.volume * 100}%`);
         </button>
       </div>
 
-      <button class="np-pill" :disabled="!current" :title="current ? '展开播放页' : '未在播放'" @click="current && (ui.nowPlayingOpen = true)">
-        <span class="p-cover">
-          <img v-if="coverUrl" :src="coverUrl" alt="" />
-          <span v-else class="ph">♪</span>
-        </span>
-        <span v-if="current" class="p-meta">
-          <span class="p-title">{{ current.title }}</span>
-          <span class="p-artist">{{ current.artist }}</span>
-        </span>
-        <span v-else class="p-meta"><span class="p-title muted">未在播放</span></span>
+      <!-- 常识语义:再点一次歌框 = 收起播放页 -->
+      <button
+        class="np-pill"
+        :disabled="!current"
+        :title="ui.nowPlayingOpen ? '收起播放页' : '展开播放页'"
+        @click="current && (ui.nowPlayingOpen = !ui.nowPlayingOpen)"
+      >
+        <!-- 切歌时旧内容上滑淡出、新内容下入;进度线在按钮层,不参与动画 -->
+        <Transition name="pillswap" mode="out-in">
+          <span v-if="current" :key="current.id" class="pill-body">
+            <span class="p-cover">
+              <img v-if="coverUrl" :src="coverUrl" alt="" />
+              <span v-else class="ph">♪</span>
+            </span>
+            <span class="p-meta">
+              <span class="p-title">{{ current.title }}</span>
+              <span class="p-artist">{{ current.artist }}</span>
+            </span>
+          </span>
+          <span v-else key="idle" class="pill-body">
+            <span class="p-cover"><span class="ph">♪</span></span>
+            <span class="p-meta"><span class="p-title muted">未在播放</span></span>
+          </span>
+        </Transition>
         <span class="p-line" :style="{ width: progress + '%' }"></span>
       </button>
     </div>
@@ -168,6 +185,23 @@ const volFill = computed(() => `${player.volume * 100}%`);
   display: flex;
   align-items: center;
   gap: 14px;
+  /* 收起动画的定量基准:max-width 从定值收到 0,歌框才能平滑滑向中央 */
+  max-width: 240px;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width 0.42s var(--ease-out-soft),
+    opacity 0.24s ease,
+    transform 0.42s var(--ease-out-soft);
+}
+/* 全屏播放页展开:传输控件与播放页底部完全重复,动画收起,
+   负 margin 抵消 .center 的 gap 后歌框才是几何居中 */
+.center.np-open .controls {
+  max-width: 0;
+  opacity: 0;
+  margin-right: -18px;
+  transform: translateX(-10px);
+  pointer-events: none;
 }
 .t-btn {
   position: relative;
@@ -248,6 +282,28 @@ const volFill = computed(() => `${player.volume * 100}%`);
   flex: none;
   background: var(--bg-3);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+/* 歌框内容体:切歌过渡的动画载体 */
+.pill-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.pillswap-enter-active {
+  transition: opacity 0.2s ease, transform 0.26s var(--ease-out-soft);
+}
+.pillswap-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.pillswap-enter-from {
+  opacity: 0;
+  transform: translateY(9px);
+}
+.pillswap-leave-to {
+  opacity: 0;
+  transform: translateY(-9px);
 }
 .p-cover img {
   width: 100%;

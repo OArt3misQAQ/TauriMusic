@@ -96,7 +96,8 @@ onUnmounted(() => {
 
 <template>
   <TrayPopup v-if="isTrayPopup" />
-  <div v-else class="app">
+  <!-- np-open:全屏播放页打开时给顶栏换烟熏材质,让它融进播放页而不是浮在上面 -->
+  <div v-else class="app" :class="{ 'np-open': ui.nowPlayingOpen && current }">
     <!-- SVG 折射滤镜:供玻璃卡片 backdrop-filter 引用(隐藏元素)。
          两次位移分别做横/纵"透镜"贴图:贴图 R/G 各只有一轴渐变(另一轴恒定 128 不位移),
          渐变集中在边缘 14%——中心清晰、边缘像真玻璃一样向外弯折。

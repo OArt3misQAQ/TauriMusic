@@ -34,9 +34,9 @@ html.dark {
   --danger: #ff5a5a;
   --danger-bg: rgba(232, 17, 35, 0.22);
 
-  --bg: #141416;
+  --bg: #121214;
   --bg-2: #0f0f10;
-  --bg-3: #1d1d20;
+  --bg-3: #1b1b1e;
   --hover: rgba(255, 255, 255, 0.06);
   --active: rgba(255, 255, 255, 0.11);
   --text: #f5f5f7;
@@ -248,7 +248,9 @@ html.dark.glass body {
 }
 
 html.dark .ambient {
-  background: linear-gradient(165deg, #2c2c33 0%, #1c1c21 52%, #121215 100%);
+  /* 深色兜底背景必须压到"墨"级:这里灰半档,整个应用的黑色就不正
+     (网易云式深黑的教训:底部 #0e0e10,顶部也只留一丝呼吸的亮) */
+  background: linear-gradient(165deg, #1c1c1f 0%, #141416 52%, #0e0e10 100%);
 }
 
 @keyframes ambient-fallback {
@@ -268,6 +270,12 @@ html.dark .ambient {
   background-position: center;
   filter: blur(88px) saturate(2) brightness(1);
   animation: ambient-drift 40s ease-in-out infinite alternate;
+}
+
+html.dark .ambient-img {
+  /* 深色下把封面氛围压暗:颜色只留流光,底子保持墨黑,
+     否则亮封面会把整个界面泡成灰蒙蒙一片 */
+  filter: blur(88px) saturate(1.7) brightness(0.75);
 }
 
 @keyframes ambient-drift {
@@ -301,16 +309,15 @@ html.dark .ambient {
     linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.05) 32%, rgba(0, 0, 0, 0.06) 62%, rgba(0, 0, 0, 0.45) 100%);
 }
 
-/* 亮色玻璃:氛围本身提亮(brightness 滤镜),而不是用厚白纱罩去盖。
-   平面白色层叠得越多色彩的空间流动越死(上一版双层白=死白的教训);
-   提亮后的封面色自己就是明快水彩,深封面也不会把界面拖进泥潭,
-   薄纱罩(26%~40%)只负责把对比再柔化一档 */
+/* 亮色玻璃:氛围本身提亮(brightness 滤镜),白纱只压到"色温统一"的程度——
+   纱太厚会把专辑氛围盖没(整窗死白的教训);铬底的白托底已经很薄,
+   两边靠"都透出同一层氛围色"来统一,而不是靠厚纱糊平 */
 html.glass:not(.dark) .ambient-scrim {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.26) 45%, rgba(255, 255, 255, 0.36) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.3) 45%, rgba(255, 255, 255, 0.4) 100%);
 }
 
 html.glass:not(.dark) .ambient-img {
-  filter: blur(88px) saturate(1.45) brightness(1.5);
+  filter: blur(88px) saturate(1.3) brightness(1.4);
 }
 
 /* 玻璃模式材质令牌:跟随深浅色 —— 白玻璃 / 黑玻璃 */
@@ -337,29 +344,34 @@ html.dark.glass {
   --pill-bg: rgba(255, 255, 255, 0.13);
   --card-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
   --scrollbar: rgba(255, 255, 255, 0.32);
-  --bar-bg: rgba(24, 24, 32, 0.55);
+  --bar-bg: rgba(22, 23, 26, 0.6);
 }
 
-/* 停靠式玻璃面板:贴合窗口边缘(窗口圆角交给系统),内角全部圆角 */
+/* 停靠式玻璃面板:贴合窗口边缘(窗口圆角交给系统) */
 html.glass .shell {
   position: relative;
-  z-index: 1;
   padding: 0;
-  /* 行 gap 归零:侧边栏顶边与顶栏无缝相连;列 gap 保留侧栏与内容区的呼吸缝 */
-  gap: 0 10px;
+  /* 列 gap 一并归零:缝隙里裸露的氛围是一条贯穿上下的"切线",
+     浅色下尤其刺眼;侧栏与内容区只靠发丝线分隔 */
+  gap: 0;
   background: transparent;
   /* 氛围背景直达窗口,铬底仅限玻璃模式以外 */
+  /* 这里绝不能挂 z-index:shell 一旦成为层叠上下文,顶栏的 z-100 就被封在 shell
+     内部,会被根层叠上下文里 z-60 的全屏播放页整体盖住——纸质皮肤没有这个上下文,
+     顶栏正常悬浮,这正是"顶栏玻璃下消失、纸质下正常"的根因。
+     shell 压在 ambient(z-0)之上靠 DOM 顺序即可,不需要显式层级 */
 }
 
 html.glass .topbar {
   grid-column: 1 / 3;
   height: auto;
-  border-radius: 0 0 20px 0;
+  /* 圆角放平:停靠缺口会露出氛围的"凹槽",整体感优先 */
+  border-radius: 0;
 }
 
 html.glass .sidebar {
-  /* 停靠左侧:顶边平直收入顶栏之下,仅右下保留内圆角 */
-  border-radius: 0 0 20px 0;
+  /* 停靠左侧:与顶栏、内容区全部平接,构成一整块连续铬面 */
+  border-radius: 0;
 }
 
 /* 正在播放胶囊:凹陷的 LCD 质感(凸起的白块在玻璃铬底上很突兀) */
@@ -388,10 +400,11 @@ html.glass .topbar {
   position: relative;
   isolation: isolate;
   border: 1px solid transparent;
-  /* 玻璃本体:均匀半透白托底(左上角不再透出大块 ambient 色),
-     border-box 是绕边缘一圈的镜面高光 */
+  /* 玻璃本体要"薄":白托底透明度压低,氛围的暖色才能透进铬底——
+     铬底与内容区共享同一层色温,不再是"左边纯白、右边暖色"两块材料。
+     分隔只靠 inset 发丝线,外投影会在氛围上拖出灰带,坚决不用 */
   background:
-    linear-gradient(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.5)) padding-box,
+    linear-gradient(rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.34)) padding-box,
     linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.3) 30%, rgba(255, 255, 255, 0.12) 55%, rgba(255, 255, 255, 0.28) 78%, rgba(255, 255, 255, 0.75) 100%) border-box;
   backdrop-filter: blur(36px) saturate(1.8) brightness(1.04);
   -webkit-backdrop-filter: blur(36px) saturate(1.8) brightness(1.04);
@@ -402,27 +415,63 @@ html.glass .topbar {
     inset 1px 0 1px rgba(255, 255, 255, 0.35),
     inset -1px 0 1px rgba(255, 255, 255, 0.35),
     inset 0 -1px 0 rgba(0, 0, 0, 0.07),
-    inset -1px 0 0 rgba(0, 0, 0, 0.06),
-    0 10px 34px rgba(0, 0, 0, 0.13);
+    inset -1px 0 0 rgba(0, 0, 0, 0.06);
 }
 
-html.dark.glass .sidebar,
-html.dark.glass .topbar {
-  /* 烟熏厚玻璃:竖向厚度层次(顶部受光、中段沉底),不再是均匀的灰塑料板 */
+html.dark.glass .sidebar {
+  /* 烟熏厚玻璃:竖向厚度层次(顶部受光、中段沉底)。
+     底色必须是"中性偏一线冷"的炭灰——旧版红>绿、蓝远高于红绿,
+     天生发紫;整体透明度也下调一档,让背后的氛围透进来,
+     玻璃才"透",而不是一块不动的紫灰色板 */
   background:
-    linear-gradient(180deg, rgba(56, 52, 70, 0.58) 0%, rgba(30, 27, 40, 0.56) 30%, rgba(16, 14, 22, 0.64) 72%, rgba(24, 22, 33, 0.6) 100%) padding-box,
+    linear-gradient(180deg, rgba(50, 52, 56, 0.5) 0%, rgba(29, 30, 33, 0.48) 30%, rgba(14, 15, 17, 0.6) 72%, rgba(21, 22, 25, 0.55) 100%) padding-box,
     /* 边缘只在顶边留一线高光,侧面近乎无光 */
-    linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.06) 10%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.12) 100%) border-box;
-  backdrop-filter: blur(42px) saturate(1.45);
-  -webkit-backdrop-filter: blur(42px) saturate(1.45);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.06) 10%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.12) 100%) border-box;
+  /* 42px 的重模糊在深色上是"奶白感"的来源:少糊一点,通透就回来一点 */
+  backdrop-filter: blur(32px) saturate(1.5);
+  -webkit-backdrop-filter: blur(32px) saturate(1.5);
   box-shadow:
     /* 顶缘受光线 + 底缘暗反光:厚玻璃的体积感 */
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
     inset 0 -1px 0 rgba(0, 0, 0, 0.45),
     inset -1px 0 0 rgba(0, 0, 0, 0.34),
     /* 顶部内侧一片极淡泛光,模拟光在玻璃内散射 */
-    inset 0 30px 46px -34px rgba(255, 255, 255, 0.09),
+    inset 0 30px 46px -34px rgba(255, 255, 255, 0.1),
     0 18px 50px rgba(0, 0, 0, 0.52);
+}
+
+/* 深色顶栏的烟熏本体挂到 ::before(与浅色同构):全屏播放页打开时
+   整体淡出让位给黑纱。烟熏是"固定色",叠在千变万化的封面辉光上,
+   顶栏永远比页面深一截、灰一截——只有让材质退场、只留黑纱压暗,
+   顶栏才是"同一块背景" */
+html.dark.glass .topbar {
+  backdrop-filter: blur(32px) saturate(1.5);
+  -webkit-backdrop-filter: blur(32px) saturate(1.5);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.52);
+}
+
+html.dark.glass .topbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.4s var(--ease-out-soft);
+  background:
+    linear-gradient(180deg, rgba(50, 52, 56, 0.5) 0%, rgba(29, 30, 33, 0.48) 30%, rgba(14, 15, 17, 0.6) 72%, rgba(21, 22, 25, 0.55) 100%) padding-box,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.06) 10%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.12) 100%) border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    inset -1px 0 0 rgba(0, 0, 0, 0.34),
+    inset 0 30px 46px -34px rgba(255, 255, 255, 0.1);
+}
+
+html.dark.glass .np-open .topbar::before {
+  opacity: 0;
 }
 
 /* 指针高光:一道跟随光标流动的柔光斑,玻璃"活"起来(screen 混合像光而不是漆);
@@ -452,9 +501,48 @@ html.dark.glass .topbar::after {
   );
 }
 
-/* 斜向光泽:玻璃面上的一道光带(screen 混合让它像光而不是漆) */
-html.glass .sidebar::before,
-html.glass .topbar::before {
+/* 光斑要铺满全窗:氛围底与播放页也是玻璃的一部分,
+   光只打在铬条上,其余区域毫无反应,"液态"就死了一半。
+   氛围底承载主视图的光(透过半透铬底与内容白纱,全窗一起被照亮);
+   播放页自持一块暗玻璃,单独给一道更宽更柔的扫光 */
+html.glass .ambient::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  background: radial-gradient(
+    560px circle at var(--pointer-x, -999px) var(--pointer-y, -999px),
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0) 65%
+  );
+}
+
+html.dark.glass .ambient::after {
+  background: radial-gradient(
+    560px circle at var(--pointer-x, -999px) var(--pointer-y, -999px),
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0) 65%
+  );
+}
+
+html.glass .np::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  background: radial-gradient(
+    620px circle at var(--pointer-x, -999px) var(--pointer-y, -999px),
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0) 62%
+  );
+}
+
+/* 斜向光泽:玻璃面上的一道光带(screen 混合让它像光而不是漆)。
+   只给侧栏用:顶栏是通栏构件,112deg 光泽的能量集中在左端,
+   会把顶栏左段堆成一块独立的"白标题栏"(正读成另一个软件) */
+html.glass .sidebar::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -468,8 +556,7 @@ html.glass .topbar::before {
   pointer-events: none;
 }
 
-html.dark.glass .sidebar::before,
-html.dark.glass .topbar::before {
+html.dark.glass .sidebar::before {
   background: linear-gradient(112deg,
       rgba(255, 255, 255, 0.07) 0%,
       rgba(255, 255, 255, 0.02) 28%,
@@ -477,21 +564,133 @@ html.dark.glass .topbar::before {
 }
 
 /* 真实折射:Chromium(WebView2)支持在 backdrop-filter 里挂 SVG 位移滤镜,
-   让玻璃后面的色彩像透过厚玻璃一样轻微弯曲流动 */
+   让玻璃后面的色彩像透过厚玻璃一样轻微弯曲流动。
+   同样只给侧栏:位移贴图渐变只分布在元素两端 14%,在通栏顶栏上
+   左右两端各出现一块 180px 宽的"扭曲斑块",材质被读碎 */
 @supports (backdrop-filter: url("#glass-refract")) {
 
-  html.glass .sidebar,
-  html.glass .topbar {
+  html.glass .sidebar {
     backdrop-filter: blur(30px) saturate(1.9) url("#glass-refract");
     -webkit-backdrop-filter: blur(30px) saturate(1.9) url("#glass-refract");
   }
 
-  /* 深色玻璃不提亮背后(否则洗成灰白),只靠折射与饱和度出层次 */
-  html.dark.glass .sidebar,
-  html.dark.glass .topbar {
-    backdrop-filter: blur(36px) saturate(1.4) url("#glass-refract");
-    -webkit-backdrop-filter: blur(36px) saturate(1.4) url("#glass-refract");
+  /* 深色玻璃不提亮背后(否则洗成灰白),只靠折射与饱和度出层次;
+     模糊同样收轻,折射才看得见 */
+  html.dark.glass .sidebar {
+    backdrop-filter: blur(28px) saturate(1.5) url("#glass-refract");
+    -webkit-backdrop-filter: blur(28px) saturate(1.5) url("#glass-refract");
   }
+}
+
+/* ===== 通栏顶栏:材质与侧栏的"停靠卡片"分家 =====
+   侧栏的斜向光泽与折射位移在通栏宽度上都会碎读(见上),顶栏改用
+   均匀竖向材质:整条从左到右是同一种玻璃,不再随氛围背景的明暗
+   被切成"左白右透"两截。白色本体挂到 ::before 上,是为了播放页
+   打开时能与烟熏染色层做透明度交叉淡化(渐变本身无法过渡) */
+html.glass .topbar {
+  background: transparent;
+  backdrop-filter: blur(30px) saturate(1.7) brightness(1.03);
+  -webkit-backdrop-filter: blur(30px) saturate(1.7) brightness(1.03);
+  /* 通栏顶栏不投影:投影会在氛围上压出一条灰带,又是一条"切线";
+     顶栏与内容区的分界只靠 border-bottom 发丝线 */
+  box-shadow: none;
+  transition:
+    border-radius 0.4s var(--ease-out-soft),
+    border-color 0.4s var(--ease-out-soft);
+}
+
+html.glass:not(.dark) .topbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.4s var(--ease-out-soft);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.34)) padding-box,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.2) 45%, rgba(255, 255, 255, 0.45) 100%) border-box;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05);
+}
+
+/* 全屏播放页:顶栏用"黑纱"压暗同一块背景——纱只有透明度的黑,
+   不带任何色相,封面辉光是什么色温,顶栏就是什么色温。
+   纱要向下越出栏体继续淡出:若在栏的下缘直接归零,
+   明度台阶就是那条"生硬的转变"(Apple 头部压暗从不设硬边) */
+html.glass .topbar .np-tint {
+  position: absolute;
+  /* top 右 底 左:bottom 为负 = 纱向下越出栏体 84px 继续淡出 */
+  inset: 0 0 -84px 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s var(--ease-out-soft);
+  background: linear-gradient(180deg,
+      rgba(8, 9, 11, 0.32) 0%,
+      rgba(8, 9, 11, 0.16) 36%,
+      rgba(8, 9, 11, 0) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+html.glass .np-open .topbar .np-tint {
+  opacity: 1;
+}
+
+html.glass:not(.dark) .np-open .topbar::before {
+  opacity: 0;
+}
+
+/* 播放页打开时顶栏内容切浅色:组件都用 var 取色,重定义令牌即整条生效。
+   自身投影一并退场:黑纱边缘就是分界,再叠投影会在亮页面上拖出灰带 */
+html.glass .np-open .topbar {
+  --text: #f5f5f7;
+  --text-2: rgba(245, 245, 247, 0.66);
+  --text-3: rgba(245, 245, 247, 0.4);
+  --hover: rgba(255, 255, 255, 0.1);
+  --active: rgba(255, 255, 255, 0.16);
+  --pill-bg: rgba(255, 255, 255, 0.12);
+  border-bottom-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 正在播放胶囊在玻璃下有专属的"凹陷暗底"规则(特异性更高),
+   播放页里整组换成玻璃芯片:磨砂 + 白描边,浮在纱上有自己的体积感 */
+html.glass .np-open .topbar .np-pill,
+html.glass .np-open .topbar .np-pill:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
+html.glass .np-open .topbar .np-pill:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* 托盘迷你面板:窗口即面板,材质铺满整窗(圆角/投影交给系统 DWM)。
+   独立小窗背后没有页面内容,backdrop-filter 无物可虚化
+   (WebView 采不到窗口外的桌面),玻璃感用"近实心渐变 + 边缘高光"模拟 */
+html.glass .tray-card {
+  background: linear-gradient(180deg, #ffffff, #f3f3f7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html.dark.glass .tray-card {
+  /* 烟熏厚玻璃:与主窗口深色铬底同语,中性偏一线冷 */
+  background: linear-gradient(180deg, #323438 0%, #1d1e21 30%, #0e0f11 72%, #151619 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 30px 46px -34px rgba(255, 255, 255, 0.09);
+}
+
+html.dark.glass .tray-card .t-rule {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 html.glass .content {
@@ -500,11 +699,10 @@ html.glass .content {
   box-shadow: none;
 }
 
-/* 亮色玻璃:内容区一层薄白托底——氛围已 88px 模糊 + 自身提亮,
-   这层只给文字一个稳定底色(26%→20%),不吞氛围的流动感。
-   上一版 0.58/0.5 叠厚纱罩被反馈「直接白了」,教训:白要加在氛围本身 */
+/* 亮色玻璃:内容区一层薄白托底——只给文字一个稳定底色,
+   氛围透色主要靠这层尽量薄(纱已回调,这里再厚就又盖没了) */
 html.glass:not(.dark) .content {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.2));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.12));
 }
 
 /* 胶囊形控件:搜索框与导航项 */
@@ -644,6 +842,9 @@ html[data-skin="paper"] .shell {
 html[data-skin="paper"] .topbar {
   background: var(--bg-2);
   border-bottom: 1px solid var(--ink);
+  /* 品牌行贴左:纸质有墨线框出可量化的边缘,16px 的默认缩进
+     会让 logo 读成"向右缩了一格";玻璃无边框无此感知,保持默认 */
+  padding-left: 8px;
 }
 html[data-skin="paper"] .sidebar {
   background: var(--bg-2);
@@ -736,5 +937,11 @@ html[data-skin="paper"] .mode-hint {
   background: var(--bg-2);
   border: 1px solid var(--ink);
   box-shadow: var(--paper-shadow);
+}
+
+/* 托盘迷你面板:纸质下整面纸铺满,白线保留 */
+html[data-skin="paper"] .tray-card {
+  background: var(--bg-2);
+  box-shadow: none;
 }
 

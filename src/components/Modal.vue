@@ -52,7 +52,7 @@ html.glass:not(.dark) .modal {
     0 24px 80px rgba(0, 0, 0, 0.4);
 }
 html.dark.glass .modal {
-  background: rgba(28, 28, 34, 0.72);
+  background: rgba(27, 28, 32, 0.72);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),
