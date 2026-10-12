@@ -9,7 +9,7 @@
 //! SMTC 是 COM 组件:全部操作收敛在一条专用线程(启动即 CoInitializeEx),
 //! 命令经 channel 转发,避免各命令线程的 COM 套间问题。
 
-// 以下三组导入均只在 Windows(SMTC)代码路径使用,非 Windows 编译时不存在
+// 以下导入均只在 Windows(SMTC)代码路径使用,非 Windows 编译时不存在
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
@@ -18,6 +18,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 #[cfg(windows)]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
+#[cfg(windows)]
+use windows::Media::{SystemMediaTransportControls, SystemMediaTransportControlsDisplayUpdater};
+#[cfg(windows)]
+use windows::Win32::Foundation::HWND;
 
 // 托盘弹窗的逻辑尺寸(物理像素 = 逻辑 × 显示缩放,定位时换算)
 const POPUP_W: f64 = 320.0;
@@ -208,26 +212,16 @@ fn run_smtc(app: AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) {
     }
 }
 
-// 系统媒体按钮回调的委托类型(泛型事件接口的具体化)
 #[cfg(windows)]
 fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows::core::Result<()> {
-    use windows::core::{factory, HSTRING};
+    use windows::core::HSTRING;
     use windows::Foundation::TimeSpan;
     use windows::Media::{
-        MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
-        SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
-        SystemMediaTransportControlsTimelineProperties,
+        MediaPlaybackStatus, SystemMediaTransportControls,
+        SystemMediaTransportControlsDisplayUpdater, SystemMediaTransportControlsTimelineProperties,
     };
-    use windows::Storage::Streams::RandomAccessStreamReference;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::CoInitializeEx;
-    use windows::Win32::System::WinRT::ISystemMediaTransportControlsInterop;
-
-    // 系统媒体按钮回调的委托类型(泛型事件接口的具体化)
-    type ButtonEventCb = windows::Foundation::TypedEventHandler<
-        SystemMediaTransportControls,
-        SystemMediaTransportControlsButtonPressedEventArgs,
-    >;
 
     // WebView2 已在主线程初始化 COM;专用线程自己初始化 MTA。
     // 若模式不匹配(极少)忽略错误——WinRT 调用仍可用
@@ -242,6 +236,119 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
     // tauri 依赖树与本 crate 的 windows 版本一致,字段类型统一为 *mut c_void
     let hwnd = HWND(hwnd.0);
 
+    // 惰性注册:首条 Track 消息才向系统创建 SMTC 会话。
+    // 启动即注册的话,控制中心从打开起就一直挂着一张无元数据的「未知应用」卡片
+    let mut session: Option<(
+        SystemMediaTransportControls,
+        SystemMediaTransportControlsDisplayUpdater,
+    )> = None;
+    // 常驻时间轴缓存:进度更新时保留 EndTime(先在 Track 分支赋值)
+    #[allow(unused_assignments)]
+    let mut end_time: i64 = 0;
+
+    let apply = |r: windows::core::Result<()>| {
+        if let Err(e) = r {
+            eprintln!("[smtc] 更新失败: {e}");
+        }
+    };
+
+    for msg in rx {
+        match msg {
+            SmtcMsg::Track {
+                title,
+                artist,
+                cover,
+                duration,
+            } => {
+                if session.is_none() {
+                    match init_session(app, hwnd) {
+                        Ok(s) => session = Some(s),
+                        Err(e) => {
+                            eprintln!("[smtc] 初始化失败: {e}");
+                            continue;
+                        }
+                    }
+                }
+                let Some((controls, du)) = session.as_ref() else {
+                    continue;
+                };
+                end_time = (duration * 1e7) as i64;
+                apply((|| {
+                    // MusicDisplayProperties 不可直接构造,由 DisplayUpdater 属性取得
+                    let mp = du.MusicProperties()?;
+                    mp.SetTitle(&HSTRING::from(&title))?;
+                    mp.SetArtist(&HSTRING::from(&artist))?;
+                    if let Some(p) = cover {
+                        // 0.61 的 CreateFromFile 收 IStorageFile:按路径取 StorageFile(异步转阻塞)
+                        let file = windows::Storage::StorageFile::GetFileFromPathAsync(
+                            &HSTRING::from(p.as_os_str().to_string_lossy().as_ref()),
+                        )?
+                        .get()?;
+                        du.SetThumbnail(&windows::Storage::Streams::RandomAccessStreamReference::CreateFromFile(&file)?)?;
+                    }
+                    du.Update()?;
+                    Ok(())
+                })());
+                // TimelineProperties 是激活型类:new + setter,而非字段赋值
+                apply((|| {
+                    let tl = SystemMediaTransportControlsTimelineProperties::new()?;
+                    tl.SetPosition(TimeSpan { Duration: 0 })?;
+                    tl.SetEndTime(TimeSpan { Duration: end_time })?;
+                    tl.SetMinSeekTime(TimeSpan { Duration: 0 })?;
+                    tl.SetMaxSeekTime(TimeSpan { Duration: end_time })?;
+                    controls.UpdateTimelineProperties(&tl)?;
+                    Ok(())
+                })());
+            }
+            SmtcMsg::Status(playing) => {
+                let Some((controls, _du)) = session.as_ref() else {
+                    continue;
+                };
+                apply(controls.SetPlaybackStatus(if playing {
+                    MediaPlaybackStatus::Playing
+                } else {
+                    MediaPlaybackStatus::Paused
+                }));
+            }
+            SmtcMsg::Position { position, duration } => {
+                let Some((controls, _du)) = session.as_ref() else {
+                    continue;
+                };
+                end_time = (duration * 1e7) as i64;
+                apply((|| {
+                    let tl = SystemMediaTransportControlsTimelineProperties::new()?;
+                    tl.SetPosition(TimeSpan {
+                        Duration: (position * 1e7) as i64,
+                    })?;
+                    tl.SetEndTime(TimeSpan { Duration: end_time })?;
+                    tl.SetMinSeekTime(TimeSpan { Duration: 0 })?;
+                    tl.SetMaxSeekTime(TimeSpan { Duration: end_time })?;
+                    controls.UpdateTimelineProperties(&tl)?;
+                    Ok(())
+                })());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 向系统注册 SMTC 会话(惰性:仅当真的开始播放时才调用),
+/// 绑定主窗口并启用系统媒体按钮。返回会话与其 DisplayUpdater
+#[cfg(windows)]
+fn init_session(
+    app: &AppHandle,
+    hwnd: HWND,
+) -> windows::core::Result<(
+    SystemMediaTransportControls,
+    SystemMediaTransportControlsDisplayUpdater,
+)> {
+    use windows::core::factory;
+    use windows::Media::{
+        MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
+        SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
+    };
+    use windows::Win32::System::WinRT::ISystemMediaTransportControlsInterop;
+
     let interop: ISystemMediaTransportControlsInterop =
         factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
     let controls: SystemMediaTransportControls = unsafe { interop.GetForWindow(hwnd)? };
@@ -254,7 +361,10 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
 
     // 注册系统媒体按钮的 WinRT 事件回调:纯进程内事件订阅,与任何 shell 无关
     let on_button = app.clone();
-    let button_cb = ButtonEventCb::new(move |_sender, args| {
+    let button_cb = windows::Foundation::TypedEventHandler::<
+        SystemMediaTransportControls,
+        SystemMediaTransportControlsButtonPressedEventArgs,
+    >::new(move |_sender, args| {
         let args = args.ok()?;
         let button = args.Button()?;
         // 伪枚举是 struct + 常量,不能用 match
@@ -282,73 +392,5 @@ fn smtc_loop(app: &AppHandle, rx: std::sync::mpsc::Receiver<SmtcMsg>) -> windows
     let du = controls.DisplayUpdater()?;
     let _ = du.SetType(MediaPlaybackType::Music);
     let _ = du.Update();
-
-    // 常驻时间轴缓存:进度更新时保留 EndTime(先在 Track 分支赋值)
-    #[allow(unused_assignments)]
-    let mut end_time: i64 = 0;
-    for msg in rx {
-        let apply = |r: windows::core::Result<()>| {
-            if let Err(e) = r {
-                eprintln!("[smtc] 更新失败: {e}");
-            }
-        };
-        match msg {
-            SmtcMsg::Track {
-                title,
-                artist,
-                cover,
-                duration,
-            } => {
-                end_time = (duration * 1e7) as i64;
-                apply((|| {
-                    // MusicDisplayProperties 不可直接构造,由 DisplayUpdater 属性取得
-                    let mp = du.MusicProperties()?;
-                    mp.SetTitle(&HSTRING::from(&title))?;
-                    mp.SetArtist(&HSTRING::from(&artist))?;
-                    if let Some(p) = cover {
-                        // 0.61 的 CreateFromFile 收 IStorageFile:按路径取 StorageFile(异步转阻塞)
-                        let file = windows::Storage::StorageFile::GetFileFromPathAsync(
-                            &HSTRING::from(p.as_os_str().to_string_lossy().as_ref()),
-                        )?
-                        .get()?;
-                        du.SetThumbnail(&RandomAccessStreamReference::CreateFromFile(&file)?)?;
-                    }
-                    du.Update()?;
-                    Ok(())
-                })());
-                // TimelineProperties 是激活型类:new + setter,而非字段赋值
-                apply((|| {
-                    let tl = SystemMediaTransportControlsTimelineProperties::new()?;
-                    tl.SetPosition(TimeSpan { Duration: 0 })?;
-                    tl.SetEndTime(TimeSpan { Duration: end_time })?;
-                    tl.SetMinSeekTime(TimeSpan { Duration: 0 })?;
-                    tl.SetMaxSeekTime(TimeSpan { Duration: end_time })?;
-                    controls.UpdateTimelineProperties(&tl)?;
-                    Ok(())
-                })());
-            }
-            SmtcMsg::Status(playing) => {
-                apply(controls.SetPlaybackStatus(if playing {
-                    MediaPlaybackStatus::Playing
-                } else {
-                    MediaPlaybackStatus::Paused
-                }));
-            }
-            SmtcMsg::Position { position, duration } => {
-                end_time = (duration * 1e7) as i64;
-                apply((|| {
-                    let tl = SystemMediaTransportControlsTimelineProperties::new()?;
-                    tl.SetPosition(TimeSpan {
-                        Duration: (position * 1e7) as i64,
-                    })?;
-                    tl.SetEndTime(TimeSpan { Duration: end_time })?;
-                    tl.SetMinSeekTime(TimeSpan { Duration: 0 })?;
-                    tl.SetMaxSeekTime(TimeSpan { Duration: end_time })?;
-                    controls.UpdateTimelineProperties(&tl)?;
-                    Ok(())
-                })());
-            }
-        }
-    }
-    Ok(())
+    Ok((controls, du))
 }
