@@ -74,6 +74,8 @@ fn register_smtc_identity() {
 
 /// 建托盘图标并启动 SMTC;在 setup 里调用
 pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
+    // 注册表登记仅 Windows 存在:调用点必须同步 cfg,否则 Linux CI 编译直接失败
+    #[cfg(windows)]
     register_smtc_identity();
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().expect("缺少应用图标").clone())
