@@ -33,8 +33,31 @@ pub(crate) struct MediaBridge {
     pub(crate) smtc: Mutex<Option<std::sync::mpsc::Sender<SmtcMsg>>>,
 }
 
+/// 向系统登记 SMTC 会话的应用身份(AUMID):
+/// GetForWindow 会话的 SourceAppUserModelId 是「exe 文件名」,
+/// 未登记时控制中心查不到友好名,显示为「未知应用」;
+/// 登记后显示 DisplayName 并挂上 exe 内嵌图标。HKCU 用户级,幂等
+#[cfg(windows)]
+fn register_smtc_identity() {
+    use winreg::enums::HKEY_CURRENT_USER;
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(aumid) = exe.file_name().map(|s| s.to_string_lossy().to_string()) else {
+        return;
+    };
+    let hkcu = winreg::RegKey::predef(HKEY_CURRENT_USER);
+    // create_subkey 幂等:已存在时打开
+    if let Ok((key, _)) = hkcu.create_subkey(format!(r"Software\Classes\AppUserModelId\{aumid}")) {
+        let _ = key.set_value("DisplayName", &"TauriMusic");
+        let _ = key.set_value("IconUri", &exe.to_string_lossy().to_string());
+    }
+}
+
 /// 建托盘图标并启动 SMTC;在 setup 里调用
 pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
+    register_smtc_identity();
+    register_smtc_identity();
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().expect("缺少应用图标").clone())
         .tooltip("TauriMusic")

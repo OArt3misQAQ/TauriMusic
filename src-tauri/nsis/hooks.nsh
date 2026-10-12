@@ -5,4 +5,6 @@
 !macro NSIS_HOOK_POSTUNINSTALL
   ; 应用内开启过自启动的话,卸载时一并移除
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TauriMusic"
+  ; 移除控制中心应用身份登记(SMTC 显示名/图标)
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\tauri-music.exe"
 !macroend
