@@ -2,6 +2,7 @@ mod lyrics;
 mod media;
 mod model;
 mod scanner;
+mod single_instance;
 mod stats;
 
 use model::Library;
@@ -3523,6 +3524,11 @@ fn get_resource_usage() -> ResourceUsage {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 启动守卫：已有实例运行时询问是否重启（旧实例卡死时的兜底）；
+    // 放行与否最终仍由下面的单实例插件裁定，这里只负责询问与清场
+    if !single_instance::guard_startup() {
+        return;
+    }
     tauri::Builder::default()
         // 二次启动时唤起已有窗口,并把传入的文件交给运行中的实例导入
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -3538,7 +3544,11 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-            WindowEvent::Focused(false) if window.label() == "tray" => {
+            // 刚弹出时焦点稳定过程会有一次假失焦,150ms 内忽略,
+            // 否则右键面板闪现即消失
+            WindowEvent::Focused(false)
+                if window.label() == "tray" && !media::tray_recently_shown() =>
+            {
                 let _ = window.hide();
             }
             _ => {}

@@ -12,20 +12,40 @@
 // 以下导入均只在 Windows(SMTC)代码路径使用,非 Windows 编译时不存在
 #[cfg(windows)]
 use std::path::PathBuf;
-#[cfg(windows)]
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-#[cfg(windows)]
-use tauri::Emitter;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 #[cfg(windows)]
 use windows::Media::{SystemMediaTransportControls, SystemMediaTransportControlsDisplayUpdater};
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
 
-// 托盘弹窗的逻辑尺寸(物理像素 = 逻辑 × 显示缩放,定位时换算)
-const POPUP_W: f64 = 320.0;
-const POPUP_H: f64 = 152.0;
+// 托盘弹窗的逻辑尺寸(物理像素 = 逻辑 × 显示缩放,定位时换算)。
+// 窗口即面板:不依赖 WebView 透明——runtime 会给透明窗口的 WebView 背后
+// 铺一层不透明软缓冲(无 background_color 时填黑),页面透出去只会是黑块,
+// 所以面板直接铺满窗口,圆角与投影交给系统 DWM
+const POPUP_W: f64 = 360.0;
+const POPUP_H: f64 = 192.0;
+
+/// 面板最近一次弹出的时刻:lib.rs 用它识别弹出后 150ms 内的焦点闪断,
+/// 那是焦点稳定过程的正常抖动,不能当成"用户关掉了面板"
+static TRAY_SHOWN_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub(crate) fn note_tray_shown() {
+    if let Ok(mut g) = TRAY_SHOWN_AT.lock() {
+        *g = Some(Instant::now());
+    }
+}
+
+pub(crate) fn tray_recently_shown() -> bool {
+    match TRAY_SHOWN_AT.lock() {
+        Ok(g) => g
+            .map(|t| t.elapsed() < Duration::from_millis(150))
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
 
 /// 托盘 + SMTC 的共享桥
 pub(crate) struct MediaBridge {
@@ -135,6 +155,11 @@ fn show_tray_popup(app: &AppHandle, icon_cx: f64, icon_top: f64, icon_h: f64) {
     }
     let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     let _ = w.show();
+    note_tray_shown();
+    // 弹出即强制主窗口广播一次最新状态:面板窗口常驻后台,错过广播后停在旧值;
+    // JS 侧的 focus/visibilitychange 补偿受 Win32 前台锁与 WebView2 可见性
+    // 语义限制不可靠,这里是唯一权威的重拉时机
+    let _ = app.emit("media://state-request", ());
     // 接管焦点:失焦即隐藏(见 lib.rs 的窗口事件)
     let _ = w.set_focus();
 }
