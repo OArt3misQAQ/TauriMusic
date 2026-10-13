@@ -39,6 +39,8 @@ pub struct AppState {
     pub scan_gate: Mutex<()>,
     /// 听歌统计(仅本机 stats.json):内存常驻,冲刷时原子落盘
     pub stats: Mutex<stats::StatsData>,
+    /// 待预览导入的音乐包路径:文件关联打开时前端可能尚未就绪,先入队由前端初始化后拉取
+    pub pending_imports: Mutex<Vec<String>>,
 }
 
 pub(crate) const LIBRARY_FILE: &str = "library.json";
@@ -399,15 +401,16 @@ pub(crate) fn sanitize_name(s: &str) -> String {
     }
 }
 
-/// 解包 .tmc 到导入目录下的同名子目录,由扫描器拾取(meta.json 会补齐缺失标签)
+/// 解包 .tmc 到导入目录下的同名子目录,由扫描器拾取(meta.json 会补齐缺失标签)。
+/// 内容级去重:音频 SHA-256 与曲库已有曲目相同则整目录清理并跳过(与包导入同标准)
 #[tauri::command]
-async fn import_tmc(path: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn import_tmc(path: String, app: tauri::AppHandle) -> Result<PackImportReport, String> {
     tauri::async_runtime::spawn_blocking(move || import_tmc_file(Path::new(&path), &app))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn import_tmc_file(src: &Path, app: &tauri::AppHandle) -> Result<String, String> {
+fn import_tmc_file(src: &Path, app: &tauri::AppHandle) -> Result<PackImportReport, String> {
     if !src.is_file() {
         return Err("文件不存在".into());
     }
@@ -426,6 +429,7 @@ fn import_tmc_file(src: &Path, app: &tauri::AppHandle) -> Result<String, String>
 
     // 新包带音频 SHA-256:解包结果与记录不符说明文件损坏,拒绝入库并清理
     let meta_path = dest.join("meta.json");
+    let mut title = stem.clone();
     if meta_path.is_file() {
         if let Ok(v) =
             serde_json::from_slice::<serde_json::Value>(&fs::read(&meta_path).unwrap_or_default())
@@ -449,9 +453,333 @@ fn import_tmc_file(src: &Path, app: &tauri::AppHandle) -> Result<String, String>
                     }
                 }
             }
+            if let Some(t) = v.get("title").and_then(|x| x.as_str()) {
+                if !t.trim().is_empty() {
+                    title = t.trim().to_string();
+                }
+            }
         }
     }
-    Ok(dest.to_string_lossy().to_string())
+    let audio = fs::read_dir(&dest)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| scanner::EXTENSIONS.contains(&x.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .ok_or("包内没有音频文件")?;
+    // 内容级去重:音频 SHA-256 与曲库已有曲目相同 → 清理并跳过(单曲包此前没有去重)
+    let sha = sha256_hex(&audio).map(|h| h.to_ascii_lowercase());
+    if let Some(sha) = &sha {
+        let dup = {
+            let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+            lib.tracks.iter().any(|t| {
+                t.sha256
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case(sha))
+                    .unwrap_or(false)
+            })
+        };
+        if dup {
+            let _ = fs::remove_dir_all(&dest);
+            return Ok(PackImportReport {
+                name: title,
+                imported: 0,
+                skipped: 1,
+            });
+        }
+    }
+    scanner::run_scan(app)?;
+    if let Some(sha) = &sha {
+        record_track_shas(&state, &[(audio.clone(), sha.clone())])?;
+    }
+    let _ = app.emit("library-changed", ());
+    Ok(PackImportReport {
+        name: title,
+        imported: 1,
+        skipped: 0,
+    })
+}
+
+// ===== 音乐包导入预览:解包到暂存目录解析元数据,不写库;确认后才走正式导入 =====
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewTrack {
+    title: String,
+    artist: String,
+    album: String,
+    duration: u32,
+    /// 相对暂存根的封面路径(资产协议已放行 covers 缓存),None 渲染占位
+    cover: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackagePreview {
+    /// tmc(单曲包)/ tmca(专辑包)/ tmcl(歌单包)
+    kind: String,
+    name: String,
+    /// 暂存目录绝对根:封面 = root + 相对路径,经资产协议展示
+    root: String,
+    /// 暂存目录名(covers/preview/<id>),前端确认/取消后调 discard_preview 清理
+    staging_id: String,
+    tracks: Vec<PreviewTrack>,
+}
+
+/// 读音频内嵌标签与时长(失败全部容错返回 None,预览不能因为坏文件而中断)
+fn read_preview_tags(path: &Path) -> (Option<String>, Option<String>, Option<String>, Option<u32>) {
+    use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::tag::Accessor;
+    let Ok(tagged) = lofty::probe::Probe::open(path).and_then(|p| p.read()) else {
+        return (None, None, None, None);
+    };
+    let duration = tagged.properties().duration().as_secs() as u32;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+    let field = |f: fn(&lofty::tag::Tag) -> Option<std::borrow::Cow<'_, str>>| -> Option<String> {
+        tag.and_then(f)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let title = field(lofty::tag::Tag::title);
+    let artist = field(lofty::tag::Tag::artist);
+    let album = field(lofty::tag::Tag::album);
+    (title, artist, album, Some(duration))
+}
+
+/// 在目录里找封面:cover.* 命名优先,否则取最大的图片文件;返回相对暂存根的路径
+fn find_cover_in(dir: &Path, staging: &Path) -> Option<String> {
+    let mut best: Option<(std::path::PathBuf, u64)> = None;
+    for e in fs::read_dir(dir).ok()?.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_lowercase())
+            .unwrap_or_default();
+        if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+            continue;
+        }
+        let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+        let is_named = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("cover"))
+            .unwrap_or(false);
+        // cover.* 直接采用;否则与当前最大图比大小
+        if is_named || best.as_ref().map(|(_, l)| len > *l).unwrap_or(true) {
+            best = Some((p, len));
+        }
+    }
+    let p = best?.0;
+    p.strip_prefix(staging)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn inspect_tmc(staging: &Path) -> Result<PackagePreview, String> {
+    let meta = fs::read(staging.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    let json_str = |k: &str| -> Option<String> {
+        meta.as_ref()
+            .and_then(|m| m.get(k))
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let audio = fs::read_dir(staging)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| scanner::EXTENSIONS.contains(&x.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .ok_or("包内没有音频文件")?;
+    let (tag_title, tag_artist, tag_album, duration) = read_preview_tags(&audio);
+    let cover = find_cover_in(staging, staging);
+    Ok(PackagePreview {
+        kind: "tmc".into(),
+        name: json_str("title")
+            .or(tag_title.clone())
+            .unwrap_or_else(|| "未命名单曲".into()),
+        root: staging.to_string_lossy().to_string(),
+        staging_id: String::new(),
+        tracks: vec![PreviewTrack {
+            title: json_str("title")
+                .or(tag_title)
+                .unwrap_or_else(|| "未知标题".into()),
+            artist: json_str("artist")
+                .or(tag_artist)
+                .unwrap_or_else(|| "未知艺人".into()),
+            album: json_str("album").or(tag_album).unwrap_or_default(),
+            duration: duration.unwrap_or(0),
+            cover,
+        }],
+    })
+}
+
+fn inspect_manifest(staging: &Path, manifest: &str, kind: &str) -> Result<PackagePreview, String> {
+    let v: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.join(manifest)).map_err(|e| format!("{manifest} 读取失败: {e}"))?,
+    )
+    .map_err(|e| format!("{manifest} 解析失败: {e}"))?;
+    let name = v
+        .get("name")
+        .and_then(|x| x.as_str())
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .unwrap_or_else(|| "未命名".into());
+    let root_cover = find_cover_in(staging, staging);
+    let mut tracks: Vec<PreviewTrack> = Vec::new();
+    for item in v
+        .get("tracks")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        let jstr = |k: &str| -> Option<String> {
+            item.get(k)
+                .and_then(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        let dir = item.get("dir").and_then(|x| x.as_str()).unwrap_or("");
+        let audio = item.get("audio").and_then(|x| x.as_str()).unwrap_or("");
+        let abs = staging.join(dir).join(audio);
+        let (tag_title, tag_artist, tag_album, duration) = if abs.is_file() {
+            read_preview_tags(&abs)
+        } else {
+            (None, None, None, None)
+        };
+        let track_dir = staging.join(dir);
+        let cover = find_cover_in(&track_dir, staging).or_else(|| root_cover.clone());
+        tracks.push(PreviewTrack {
+            title: jstr("title")
+                .or(tag_title)
+                .unwrap_or_else(|| "未知标题".into()),
+            artist: jstr("artist")
+                .or(tag_artist)
+                .unwrap_or_else(|| "未知艺人".into()),
+            album: jstr("album").or(tag_album).unwrap_or_default(),
+            duration: duration.unwrap_or(0),
+            cover,
+        });
+    }
+    if tracks.is_empty() {
+        return Err("包内没有曲目清单".into());
+    }
+    Ok(PackagePreview {
+        kind: kind.into(),
+        name,
+        root: staging.to_string_lossy().to_string(),
+        staging_id: String::new(),
+        tracks,
+    })
+}
+
+/// 解析音乐包内容供前端预览:解包到 covers/preview 暂存(资产协议已放行),
+/// 只读元数据不写库;确认导入走原有命令重新解包到导入目录,取消则整目录清理
+#[tauri::command]
+async fn inspect_package(path: String, app: tauri::AppHandle) -> Result<PackagePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let src = Path::new(&path);
+        if !src.is_file() {
+            return Err("文件不存在".into());
+        }
+        let ext = src
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_lowercase())
+            .unwrap_or_default();
+        let kind = match ext.as_str() {
+            "tmc" | "tmca" | "tmcl" => ext,
+            _ => return Err("仅支持 .tmc/.tmca/.tmcl".into()),
+        };
+        let state = app.state::<AppState>();
+        let staging_root = state.cache_dir.join("covers").join("preview");
+        fs::create_dir_all(&staging_root).map_err(|e| e.to_string())?;
+        let id = format!(
+            "{}-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            std::process::id()
+        );
+        let staging = staging_root.join(&id);
+        fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        if let Err(e) = sevenz_rust2::decompress_file(src, &staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("解包失败: {e}"));
+        }
+        let parsed = match kind.as_str() {
+            "tmc" => inspect_tmc(&staging),
+            "tmca" => inspect_manifest(&staging, "album.json", "tmca"),
+            _ => inspect_manifest(&staging, "playlist.json", "tmcl"),
+        };
+        match parsed {
+            Ok(mut preview) => {
+                preview.staging_id = id;
+                Ok(preview)
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&staging);
+                Err(e)
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 清理一个预览暂存目录:前端在确认导入完成或取消时调用
+#[tauri::command]
+fn discard_preview(id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    // 只认纯目录名:阻断任何路径穿越企图
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err("非法的暂存 id".into());
+    }
+    let dir = state.cache_dir.join("covers").join("preview").join(&id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 拉走并清空待预览的音乐包路径:启动期前端未就绪时 handle_open_paths 会先入队
+#[tauri::command]
+fn take_pending_imports(state: tauri::State<AppState>) -> Vec<String> {
+    state
+        .pending_imports
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
+}
+
+/// 显示桌面歌词小窗(常驻窗口,启动即创建;显示/隐藏状态由前端记忆)
+#[tauri::command]
+fn show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+    let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
+    let _ = w.show();
+    Ok(())
+}
+
+/// 隐藏桌面歌词小窗
+#[tauri::command]
+fn hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
+    let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
+    let _ = w.hide();
+    Ok(())
 }
 
 /// 处理"打开方式"/命令行传入的文件:.tmc 解包导入,音频复制进导入目录,完成后重扫
@@ -480,6 +808,7 @@ fn handle_open_paths(app: &tauri::AppHandle, args: &[String]) {
             let mut all_session_shas: Vec<(PathBuf, String)> = Vec::new();
             let mut failures: Vec<String> = Vec::new();
             let mut loose: Vec<PathBuf> = Vec::new();
+            let mut packages: Vec<String> = Vec::new();
             for p in &paths {
                 let ext = p
                     .extension()
@@ -494,19 +823,12 @@ fn handle_open_paths(app: &tauri::AppHandle, args: &[String]) {
                     loose.push(p.clone());
                     continue;
                 }
-                let result = if ext == "tmc" {
-                    import_tmc_file(p, &app).map(|_| ())
-                } else if ext == "tmca" {
-                    import_tmca_blocking(&p.to_string_lossy(), &app).map(|_| ())
-                } else if ext == "tmcl" {
-                    import_playlist_tmcl_blocking(&p.to_string_lossy(), &app).map(|_| ())
-                } else {
-                    failures.push(format!("{name}: 不支持的格式"));
+                if ext == "tmc" || ext == "tmca" || ext == "tmcl" {
+                    // 音乐包改走预览弹窗:前端确认后才正式导入(入队防启动期前端未就绪)
+                    packages.push(p.to_string_lossy().to_string());
                     continue;
-                };
-                if let Err(e) = result {
-                    failures.push(format!("{name}: {e}"));
                 }
+                failures.push(format!("{name}: 不支持的格式"));
             }
             if !loose.is_empty() {
                 match import_loose(&loose, &import_dir, &state) {
@@ -514,8 +836,19 @@ fn handle_open_paths(app: &tauri::AppHandle, args: &[String]) {
                     Err(e) => failures.push(format!("导入失败: {e}")),
                 }
             }
-            if let Err(e) = scanner::run_scan(&app) {
-                failures.push(format!("扫描失败: {e}"));
+            // 音乐包路径交给前端预览:已经运行的实例立即收事件;
+            // 启动期的实例前端未就绪会错过,由 take_pending_imports 在初始化时拉取
+            if !packages.is_empty() {
+                if let Ok(mut g) = state.pending_imports.lock() {
+                    g.extend(packages.iter().cloned());
+                }
+                let _ = app.emit("import-request", packages.len() as u32);
+                show_main(&app);
+            }
+            if !loose.is_empty() {
+                if let Err(e) = scanner::run_scan(&app) {
+                    failures.push(format!("扫描失败: {e}"));
+                }
             }
             if record_track_shas(&state, &all_session_shas).is_err() {
                 eprintln!("[import] 散装导入指纹写入失败");
@@ -1175,8 +1508,13 @@ fn import_tmca_blocking(path: &str, app: &tauri::AppHandle) -> Result<PackImport
     record_pack_shas(&state, &dest, &tracks_json)?;
 
     let _ = app.emit("library-changed", ());
+    // 全部曲目都与曲库重复:不是错误,作为正常跳过返回(导入预览里明确提示)
     if tracks_json.is_empty() && skipped > 0 {
-        return Err("专辑内全部曲目都已存在,已跳过导入".into());
+        return Ok(PackImportReport {
+            name: album_name,
+            imported: 0,
+            skipped,
+        });
     }
     Ok(PackImportReport {
         name: album_name,
@@ -3045,6 +3383,14 @@ fn import_playlist_tmcl_blocking(
     // 来源包记录的 SHA 写进曲库,供后续包导入做内容去重
     record_pack_shas(&state, &dest, &tracks_json)?;
 
+    // 全部曲目都与曲库重复:不建空歌单,作为正常跳过返回(导入预览里明确提示)
+    if tracks_json.is_empty() && skipped > 0 {
+        return Ok(PackImportReport {
+            name: list_name,
+            imported: 0,
+            skipped,
+        });
+    }
     // 建立播放列表:优先用扫描后的曲库数据,否则退回 manifest 快照
     let mut entries: Vec<model::PlaylistEntry> = Vec::new();
     for item in &tracks_json {
@@ -3559,6 +3905,8 @@ pub fn run() {
             let cache_dir = handle.path().app_cache_dir().expect("无法确定应用缓存目录");
             std::fs::create_dir_all(&data_dir).ok();
             std::fs::create_dir_all(cache_dir.join("covers")).ok();
+            // 清理上次预览遗留的暂存目录:确认/取消时都会清理,这里兜底异常退出残留
+            let _ = fs::remove_dir_all(cache_dir.join("covers").join("preview"));
             let lib = Library::load(&data_dir.join(LIBRARY_FILE));
             let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
@@ -3567,6 +3915,7 @@ pub fn run() {
                 cache_dir,
                 scan_gate: Mutex::new(()),
                 stats: Mutex::new(stats),
+                pending_imports: Mutex::new(Vec::new()),
             });
             // 首次启动即建好导入目录并登记为扫描来源
             ensure_import_dir(handle, &app.state::<AppState>()).ok();
@@ -3603,6 +3952,11 @@ pub fn run() {
             open_import_dir,
             import_paths,
             import_tmc,
+            inspect_package,
+            discard_preview,
+            take_pending_imports,
+            show_lyrics_window,
+            hide_lyrics_window,
             pick_tmc_file,
             pick_audio_files,
             pick_export_dir,

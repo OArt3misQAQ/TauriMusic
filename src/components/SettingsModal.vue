@@ -11,6 +11,16 @@ const skinOptions = [
   { value: "paper", label: "纸质" },
 ] as const;
 
+/** 桌面歌词小窗开关:开关状态持久化,窗口显示/隐藏由 Rust 命令执行;
+ *  小窗自己的关闭按钮也会写同一份 localStorage(跨窗口 storage 事件同步) */
+const lyricsOn = ref(localStorage.getItem("tm-lyrics-on") === "1");
+function toggleLyrics(): void {
+  const next = !lyricsOn.value;
+  lyricsOn.value = next;
+  localStorage.setItem("tm-lyrics-on", next ? "1" : "0");
+  void (next ? api.showLyricsWindow() : api.hideLyricsWindow());
+}
+
 const themeOptions = [
   { value: "system", label: "跟随系统" },
   { value: "light", label: "浅色" },
@@ -142,6 +152,12 @@ async function clearStatsConfirmed(): Promise<void> {
       >
         <span>{{ opt.label }}</span>
         <svg v-if="ui.themeMode === opt.value" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m5 12.5 4.5 4.5L19 8" />
+        </svg>
+      </button>
+      <button class="opt" :class="{ on: lyricsOn }" @click="toggleLyrics">
+        <span>桌面歌词<small class="opt-sub">桌面置顶小窗:逐行滚动歌词 + 播放/切歌/音量控制,透明度与位置可调,关闭主窗口仍在</small></span>
+        <svg v-if="lyricsOn" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m5 12.5 4.5 4.5L19 8" />
         </svg>
       </button>

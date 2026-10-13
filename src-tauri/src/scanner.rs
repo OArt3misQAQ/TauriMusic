@@ -198,10 +198,10 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                             }
 
                             let n = done.load(std::sync::atomic::Ordering::Relaxed);
-                            if n.is_multiple_of(20) || n == total {
-                                let _ = app
-                                    .emit("scan-progress", json!({ "current": n, "total": total }));
-                            }
+                            // 逐文件上报进度:旧的"每 20 个发一次"在 42 首的曲库里
+                            // 只会发出 20/42、40/42 两帧,用户看到的就是"卡在 20"
+                            let _ =
+                                app.emit("scan-progress", json!({ "current": n, "total": total }));
                         }
                     }
                     out

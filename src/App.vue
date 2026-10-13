@@ -14,6 +14,8 @@ import PlaylistDetailView from "./views/PlaylistDetailView.vue";
 import NameModal from "./components/NameModal.vue";
 import PlaylistPickerModal from "./components/PlaylistPickerModal.vue";
 import ExportModal from "./components/ExportModal.vue";
+import ImportPreviewModal from "./components/ImportPreviewModal.vue";
+import LyricsWidget from "./components/LyricsWidget.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import AlbumsView from "./views/AlbumsView.vue";
 import AlbumDetailView from "./views/AlbumDetailView.vue";
@@ -23,7 +25,8 @@ import SearchView from "./views/SearchView.vue";
 import StatsView from "./views/StatsView.vue";
 import TrashView from "./views/TrashView.vue";
 import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
-import { exportState, initLibrary, initDragImport } from "./stores/library";
+import { exportState, importPreview, initLibrary, initDragImport } from "./stores/library";
+import { api } from "./api";
 import { initShortcuts } from "./stores/shortcuts";
 import { initStats } from "./stores/stats";
 import { initMediaBridge } from "./stores/media";
@@ -70,6 +73,8 @@ function onPointerMove(e: PointerEvent): void {
 
 /** 托盘迷你面板是同前端的第二个窗口:按标签分支渲染,不跑主窗口的重初始化 */
 const isTrayPopup = getCurrentWindow().label === "tray";
+/** 桌面歌词小窗:同第三窗口,只渲染小窗自身 */
+const isLyricsWidget = getCurrentWindow().label === "lyrics";
 
 onMounted(() => {
   // 主题与皮肤令牌两个窗口都需要(托盘面板靠同一份 localStorage 对齐外观)
@@ -78,6 +83,11 @@ onMounted(() => {
   if (isTrayPopup) {
     // 挂 tray-host 类让透明背景样式只作用于这个窗口
     document.documentElement.classList.add("tray-host");
+    return;
+  }
+  if (isLyricsWidget) {
+    // 桌面歌词小窗:上次开启过则随主窗口一起显示(位置由小窗自己恢复)
+    if (localStorage.getItem("tm-lyrics-on") === "1") void api.showLyricsWindow();
     return;
   }
   initWelcome();
@@ -96,6 +106,7 @@ onUnmounted(() => {
 
 <template>
   <TrayPopup v-if="isTrayPopup" />
+  <LyricsWidget v-else-if="isLyricsWidget" />
   <!-- np-open:全屏播放页打开时给顶栏换烟熏材质,让它融进播放页而不是浮在上面 -->
   <div v-else class="app" :class="{ 'np-open': ui.nowPlayingOpen && current }">
     <!-- SVG 折射滤镜:供玻璃卡片 backdrop-filter 引用(隐藏元素)。
@@ -154,6 +165,11 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
     </Transition>
     <Transition name="modal">
       <ExportModal v-if="exportState.open" />
+    </Transition>
+
+    <!-- 音乐包导入预览:双击/拖入 .tmc/.tmca/.tmcl 时先展示包内曲目 -->
+    <Transition name="modal">
+      <ImportPreviewModal v-if="importPreview.open" />
     </Transition>
 
     <ContextMenu />

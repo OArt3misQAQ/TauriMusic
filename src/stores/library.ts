@@ -1,7 +1,13 @@
 import { computed, reactive, shallowReactive } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { api, type Playlist, type Track, type TrashEntry } from "../api";
+import {
+  api,
+  type PackagePreview,
+  type Playlist,
+  type Track,
+  type TrashEntry,
+} from "../api";
 import { purgeDeleted } from "./player";
 
 export interface Album {
@@ -78,6 +84,17 @@ function initLibraryListeners(): void {
     lib.scanTotal = e.payload.total;
   });
 
+  // 文件关联"打开方式"打开音乐包 → 主窗口弹出预览弹窗
+  // (启动期错过的路径由 take_pending_imports 兜底,那里也会走到这里)
+  void listen("import-request", async () => {
+    try {
+      const pending = await api.takePendingImports();
+      if (pending.length) void openImportPreview(pending);
+    } catch (err) {
+      console.error("拉取待导入音乐包失败", err);
+    }
+  });
+
   // 后端处理"打开方式"/命令行导入完成后刷新曲库,并对新增曲目自动在线匹配
   void listen("library-changed", async () => {
     try {
@@ -104,6 +121,13 @@ function initLibraryListeners(): void {
 
 export async function initLibrary(): Promise<void> {
   initLibraryListeners();
+  // 启动期文件关联打开的音乐包:后端先入队,前端就绪后拉取并弹预览
+  try {
+    const pending = await api.takePendingImports();
+    if (pending.length) void openImportPreview(pending);
+  } catch (err) {
+    console.error("拉取待导入音乐包失败", err);
+  }
   try {
     const data = await api.getLibrary();
     applyLibraryData(data);
@@ -159,75 +183,138 @@ export function flashStatus(text: string): void {
   importStatusTimer = window.setTimeout(() => (lib.importStatus = ""), 6000);
 }
 
+/* ===== 音乐包导入预览:先解析展示包内曲目,确认后才正式导入 ===== */
+
+/** 音乐包扩展名 */
+const PACKAGE_EXTS = [".tmc", ".tmca", ".tmcl"];
+
+/** 预览弹窗状态:preview(展示曲目)→ importing(写库中)→ done(结果汇总) */
+export const importPreview = reactive({
+  open: false,
+  phase: "preview" as "preview" | "importing" | "done",
+  packages: [] as (PackagePreview & { path: string; checked: boolean })[],
+  /** 正在导入第几个包 */
+  current: 0,
+  /** 当前包的导入结果行(驱动结果清单) */
+  status: "",
+  results: [] as string[],
+  /** 本次实际新导入的歌曲(重扫后与预览前快照做差) */
+  newTracks: [] as { title: string; artist: string; cover: string | null }[],
+  error: "",
+  summary: "",
+});
+
+/** 预览打开时的曲库快照:确认导入后据此判定哪些是新增曲目做在线补全 */
+let previewBeforeIds = new Set<string>();
+
+/** 打开导入预览:音乐包逐个解析(暂存解包,不写库);散装文件保持原直接导入通道 */
+export async function openImportPreview(paths: string[]): Promise<void> {
+  const packs = paths.filter((p) =>
+    PACKAGE_EXTS.some((e) => p.toLowerCase().endsWith(e)),
+  );
+  const rest = paths.filter(
+    (p) => !PACKAGE_EXTS.some((e) => p.toLowerCase().endsWith(e)),
+  );
+  if (rest.length) void importDropped(rest);
+  if (!packs.length) return;
+  previewBeforeIds = new Set(lib.tracks.map((t) => t.id));
+  importPreview.open = true;
+  importPreview.phase = "preview";
+  importPreview.packages = [];
+  importPreview.current = 0;
+  importPreview.results = [];
+  importPreview.error = "";
+  importPreview.summary = "";
+  const loaded: (PackagePreview & { path: string; checked: boolean })[] = [];
+  const errors: string[] = [];
+  for (const p of packs) {
+    try {
+      loaded.push({ ...(await api.inspectPackage(p)), path: p, checked: true });
+    } catch (err) {
+      console.error("解析音乐包失败", err);
+      const name = p.split(/[\\/]/).pop() ?? p;
+      errors.push(`${name}: ${String(err)}`);
+    }
+  }
+  if (errors.length) importPreview.error = errors.join(" · ");
+  importPreview.packages = loaded;
+  if (!loaded.length) {
+    importPreview.summary = "没有可导入的音乐包";
+    importPreview.phase = "done";
+  }
+}
+
+/** 确认导入:只导入勾选的包(解包到导入目录 + 扫描入库);
+ *  在线补全走网络,放后台跑——绝不让「导入完成」等网络 */
+export async function confirmPackageImport(): Promise<void> {
+  if (importPreview.phase !== "preview") return;
+  const selected = importPreview.packages.filter((p) => p.checked);
+  if (!selected.length) return;
+  importPreview.phase = "importing";
+  const parts: string[] = [];
+  let failed = 0;
+  for (let i = 0; i < selected.length; i++) {
+    importPreview.current = i + 1;
+    const p = selected[i];
+    try {
+      const r =
+        p.kind === "tmca"
+          ? await api.importTmca(p.path)
+          : p.kind === "tmcl"
+            ? await api.importPlaylistTmcl(p.path)
+            : await api.importTmc(p.path);
+      const skip = r.skipped ? ` · 跳过 ${r.skipped} 首重复` : "";
+      const label = p.kind === "tmca" ? "专辑" : p.kind === "tmcl" ? "歌单" : "单曲";
+      const line =
+        r.imported > 0
+          ? `${label}「${r.name}」导入完成${skip}`
+          : `${label}「${r.name}」内容与曲库重复,已跳过${skip}`;
+      importPreview.status = line;
+      importPreview.results.push(line);
+      parts.push(`${label}「${p.name}」${skip}`);
+    } catch (err) {
+      failed++;
+      const line = `「${p.name}」导入失败: ${String(err)}`;
+      importPreview.results.push(line);
+      parts.push(`「${p.name}」失败`);
+    }
+  }
+  // 扫描入库一完成就切「导入完成」;在线补全是网络活,放后台绝不等它
+  await rescan();
+  // 与预览前的曲库快照做差:列出本次真正新导入的歌曲
+  importPreview.newTracks = lib.tracks
+    .filter((t) => !previewBeforeIds.has(t.id))
+    .map((t) => ({ title: t.title, artist: t.artist, cover: t.cover }));
+  importPreview.summary = parts.join(" · ") + (failed ? ` · ${failed} 个失败` : "");
+  importPreview.phase = "done";
+  void enrichNewTracks(previewBeforeIds, "已导入");
+}
+
+/** 关闭预览并清理暂存:确认导入完成与取消共用 */
+export async function closeImportPreview(): Promise<void> {
+  for (const p of importPreview.packages) {
+    try {
+      await api.discardPreview(p.stagingId);
+    } catch (err) {
+      console.error("清理预览暂存失败", err);
+    }
+  }
+  importPreview.open = false;
+  importPreview.packages = [];
+  importPreview.results = [];
+}
+
 export async function importDropped(paths: string[]): Promise<void> {
+  // 音乐包(双击打开/拖入)统一走预览弹窗:用户确认后才正式导入
+  if (paths.some((p) => PACKAGE_EXTS.some((e) => p.toLowerCase().endsWith(e)))) {
+    await openImportPreview(paths);
+    return;
+  }
   const before = new Set(lib.tracks.map((t) => t.id));
-  const tmca = paths.filter((p) => p.toLowerCase().endsWith(".tmca"));
-  const tmcl = paths.filter((p) => p.toLowerCase().endsWith(".tmcl"));
-  const tmc = paths.filter((p) => p.toLowerCase().endsWith(".tmc"));
   const rest = paths.filter(
     (p) => ![".tmc", ".tmcl", ".tmca"].some((e) => p.toLowerCase().endsWith(e)),
   );
   const parts: string[] = [];
-  if (tmca.length) {
-    let ok = 0;
-    let fail = 0;
-    const names: string[] = [];
-    let skippedTotal = 0;
-    for (const p of tmca) {
-      try {
-        const r = await api.importTmca(p);
-        names.push(r.name);
-        skippedTotal += r.skipped;
-        ok++;
-      } catch (err) {
-        console.error("导入 TMCA 失败", err);
-        fail++;
-        parts.push(`专辑导入失败: ${String(err)}`);
-      }
-    }
-    if (ok) {
-      const skipNote = skippedTotal ? ` · 跳过 ${skippedTotal} 首重复` : "";
-      parts.push(`导入专辑「${names.join("」「")}」${skipNote}${fail ? ` · ${fail} 个失败` : ""}`);
-    }
-  }
-  if (tmcl.length) {
-    let ok = 0;
-    let fail = 0;
-    const names: string[] = [];
-    let skippedTotal = 0;
-    for (const p of tmcl) {
-      try {
-        const r = await api.importPlaylistTmcl(p);
-        names.push(r.name);
-        skippedTotal += r.skipped;
-        ok++;
-      } catch (err) {
-        console.error("导入 TMCL 失败", err);
-        fail++;
-        parts.push(`播放列表导入失败: ${String(err)}`);
-      }
-    }
-    if (ok) {
-      const skipNote = skippedTotal ? ` · 跳过 ${skippedTotal} 首重复` : "";
-      parts.push(
-        `导入播放列表「${names.join("」「")}」${skipNote}${fail ? ` · ${fail} 个失败` : ""}`,
-      );
-    }
-  }
-  if (tmc.length) {
-    let ok = 0;
-    let fail = 0;
-    for (const p of tmc) {
-      try {
-        await api.importTmc(p);
-        ok++;
-      } catch (err) {
-        console.error("导入 TMC 失败", err);
-        fail++;
-      }
-    }
-    parts.push(ok ? `导入 ${ok} 个音乐包${fail ? ` · ${fail} 个失败` : ""}` : "音乐包导入失败");
-  }
   if (rest.length) {
     try {
       const r = await api.importPaths(rest);
@@ -246,11 +333,11 @@ export async function importDropped(paths: string[]): Promise<void> {
   await enrichNewTracks(before, parts.length ? parts.join(" · ") : "已导入");
 }
 
-/** 从文件选择器导入 .tmc 音乐包(设置弹窗入口) */
+/** 从文件选择器导入 .tmc 音乐包(设置弹窗入口):与双击打开同走预览弹窗 */
 export async function importTmcPick(): Promise<void> {
   const path = await api.pickTmcFile();
   if (!path) return;
-  await importDropped([path]);
+  await openImportPreview([path]);
 }
 
 /** 逐张专辑在线补全,返回有更新的专辑数;并发度 3(更高会触发接口限流) */

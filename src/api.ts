@@ -58,6 +58,28 @@ export interface PackImportReport {
   skipped: number;
 }
 
+/** 音乐包预览的曲目条目(来自暂存解包的标签/清单,未经入库) */
+export interface PreviewTrack {
+  title: string;
+  artist: string;
+  album: string;
+  /** 秒 */
+  duration: number;
+  /** 相对预览暂存根的封面路径(null = 无封面) */
+  cover: string | null;
+}
+
+/** 音乐包预览结果:解包到 covers/preview 暂存后的只读元数据 */
+export interface PackagePreview {
+  kind: "tmc" | "tmca" | "tmcl";
+  name: string;
+  /** 暂存目录绝对根(封面经 asset 协议展示) */
+  root: string;
+  /** 暂存目录名,确认/取消后调 discardPreview 清理 */
+  stagingId: string;
+  tracks: PreviewTrack[];
+}
+
 export interface ScanReport {
   added: number;
   updated: number;
@@ -164,7 +186,7 @@ export const api = {
   getImportDir: () => invoke<string>("get_import_dir"),
   openImportDir: () => invoke<string>("open_import_dir"),
   importPaths: (paths: string[]) => invoke<ImportReport>("import_paths", { paths }),
-  importTmc: (path: string) => invoke<string>("import_tmc", { path }),
+  importTmc: (path: string) => invoke<PackImportReport>("import_tmc", { path }),
   importTmca: (path: string) => invoke<PackImportReport>("import_tmca", { path }),
   pickTmcFile: () => invoke<string | null>("pick_tmc_file"),
   pickAudioFiles: () => invoke<string[] | null>("pick_audio_files"),
@@ -210,5 +232,14 @@ export const api = {
   movePlaylistEntry: (playlistId: string, from: number, to: number) =>
     invoke<Playlist[]>("move_playlist_entry", { playlistId, from, to }),
   importPlaylistTmcl: (path: string) => invoke<PackImportReport>("import_playlist_tmcl", { path }),
+  /** 解析音乐包内容供预览:只读暂存,不写库 */
+  inspectPackage: (path: string) => invoke<PackagePreview>("inspect_package", { path }),
+  /** 清理一个预览暂存目录 */
+  discardPreview: (id: string) => invoke<void>("discard_preview", { id }),
+  /** 拉走并清空待预览的音乐包路径(启动期前端未就绪时后端先入队) */
+  takePendingImports: () => invoke<string[]>("take_pending_imports"),
+  /** 显示/隐藏桌面歌词小窗 */
+  showLyricsWindow: () => invoke<void>("show_lyrics_window"),
+  hideLyricsWindow: () => invoke<void>("hide_lyrics_window"),
   getResourceUsage: () => invoke<ResourceUsage>("get_resource_usage"),
 };
