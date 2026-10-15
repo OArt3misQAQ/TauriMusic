@@ -182,7 +182,7 @@ async function clearStatsConfirmed(): Promise<void> {
             </div>
           </div>
           <button class="opt" @click="toggleLyrics">
-            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:逐行滚动歌词 + 播放/切歌/音量控制,透明度与位置可调,关闭主窗口仍在</small></span>
+            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:逐行滚动歌词 + 播放/切歌/音量控制,背景不透明度与歌词大小可调,关闭主窗口仍在</small></span>
             <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
           </button>
         </div>
@@ -258,9 +258,10 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
         <div class="group">
           <button v-for="a in assocs" :key="a.ext" class="opt" @click="toggleAssoc(a)">
-            <span class="label">{{ a.label }}<small class="sub ext">.{{ a.ext }} · {{ ASSOC_HINT }}</small></span>
+            <span class="label">{{ a.label }}<small class="sub">双击 .{{ a.ext }} 文件用 TauriMusic 打开</small></span>
             <span class="switch" :class="{ on: a.registered }"><i></i></span>
           </button>
+          <p class="hint">{{ ASSOC_HINT }}</p>
         </div>
       </section>
     </div>
