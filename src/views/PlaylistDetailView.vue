@@ -161,11 +161,8 @@ function rowMenu(e: MouseEvent, index: number): void {
               <path d="m6 9.5 6 6 6-6" />
             </svg>
           </button>
-          <button class="op danger" title="从列表移除(不删除文件)" @click="onRemove(r.index)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M6 6l12 12M18 6 6 18" />
-            </svg>
-          </button>
+          <!-- 移除只走右键菜单:行内 × 悬停浮现后位置固定,删一行行上移,
+               × 会悬到下一首的同一位置,极易连环误删(歌单被清空事故的根源) -->
         </span>
       </div>
     </div>
