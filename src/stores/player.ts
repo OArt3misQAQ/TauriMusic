@@ -43,11 +43,14 @@ function loadSavedMode(): PlayMode {
 export function setMode(m: PlayMode): void {
   const wasShuffle = player.mode === "shuffle";
   player.mode = m;
-  // 每次切入随机都重新洗牌:上轮随机已放过的歌不再被旧洗牌袋记着,
-  // 新一轮随机从全队列重新洗起;播放历史一并作废(prev 语义随新轮次走)
-  if (m === "shuffle" && !wasShuffle) {
-    bag = [];
+  // 每次切入随机都可见地重新洗牌:队列真实重排(正在播的提到队首),
+  // 播放历史作废;退回其他模式时保留洗好的顺序继续顺序走
+  if (m === "shuffle" && !wasShuffle && player.queue.length > 1) {
+    reshuffleQueue();
+    queueShuffled = true;
     playHistory = [];
+  } else if (m !== "shuffle") {
+    queueShuffled = false;
   }
   storageSet(StorageKeys.mode, m);
 }
@@ -67,6 +70,24 @@ let playHistory: number[] = [];
 let bag: number[] = [];
 /** 袋子对应的队列引用:队列被替换(playTracks/删除清理)时自动重建 */
 let bagQueue: Track[] | null = null;
+/** 随机模式 = 队列已被可见洗牌(切模式/随机按钮时重排),顺序推进即可 */
+let queueShuffled = false;
+
+/** 把当前队列原地洗牌:正在播的曲子提到队首,其余 Fisher-Yates 随机重排 */
+function reshuffleQueue(): void {
+  const q = [...player.queue];
+  if (player.index >= 0 && player.index < q.length) {
+    q.unshift(q.splice(player.index, 1)[0]);
+    player.index = 0;
+  }
+  for (let i = q.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [q[i], q[j]] = [q[j], q[i]];
+  }
+  player.queue = q;
+  bag = [];
+  bagQueue = q;
+}
 
 // 开发期 HMR 热替换会丢弃旧模块实例,但旧的 <audio> 元素仍留在内存里继续出声,
 // 其 ended→replay 自循环监听也一并存活——不清理的话会积累出
@@ -214,11 +235,25 @@ export function purgeDeleted(ids: string[]): void {
 /** 以一组曲目作为队列播放,start 为起始下标。新队列重置播放历史与洗牌袋 */
 export function playTracks(tracks: Track[], start = 0): void {
   if (tracks.length === 0) return;
-  player.queue = tracks;
-  player.index = Math.max(0, Math.min(start, tracks.length - 1));
+  const q = [...tracks];
+  let idx = Math.max(0, Math.min(start, q.length - 1));
+  if (player.mode === "shuffle" && q.length > 1) {
+    // 随机模式下队列可见洗牌:起始曲提到队首,其余随机重排
+    q.unshift(q.splice(idx, 1)[0]);
+    for (let i = q.length - 1; i > 1; i--) {
+      const j = 1 + Math.floor(Math.random() * i);
+      [q[i], q[j]] = [q[j], q[i]];
+    }
+    idx = 0;
+    queueShuffled = true;
+  } else {
+    queueShuffled = false;
+  }
+  player.queue = q;
+  player.index = idx;
   playHistory = [];
   bag = [];
-  bagQueue = tracks;
+  bagQueue = q;
   load(player.queue[player.index]);
 }
 
@@ -232,6 +267,11 @@ export function playTrack(track: Track, context?: Track[]): void {
 export function toggle(): void {
   if (!current.value) return;
   const a = ensureAudio();
+  // 队列被重排/模式切换后 current 可能尚无 src(从未 load 过):先加载即播放
+  if (!a.src) {
+    load(player.queue[player.index] ?? current.value);
+    return;
+  }
   if (a.paused) void a.play().catch(() => {});
   else a.pause();
 }
@@ -259,6 +299,23 @@ export function next(manual = true): void {
   }
   if (n === 1) {
     if (manual || mode === "loop") replay();
+    return;
+  }
+
+  // 随机模式且队列已预洗:顺序推进洗好的顺序(与队列抽屉显示一致),
+  // 手动切歌到队尾时回卷,自然播完一轮则停下
+  if (mode === "shuffle" && queueShuffled) {
+    pushHistory(player.index);
+    const nx = player.index + 1;
+    if (nx < n) {
+      player.index = nx;
+      load(player.queue[nx]);
+    } else if (manual) {
+      player.index = 0;
+      load(player.queue[0]);
+    } else {
+      stop();
+    }
     return;
   }
 
@@ -342,6 +399,12 @@ export function upcomingTracks(): { track: Track; queueIndex: number }[] {
   if (n === 0) return [];
   const cur = player.index;
   if (player.mode === "shuffle") {
+    // 预洗队列:抽屉按洗好的顺序展示当前曲之后的走向
+    if (queueShuffled) {
+      return q
+        .map((track, i) => ({ track, queueIndex: i }))
+        .filter((x) => x.queueIndex > cur);
+    }
     if (bagQueue !== q || bag.length === 0) {
       // 袋子还没建(队列刚替换/还没播过下一曲):真实顺序未定,先按队列顺序展示
       return q.map((track, i) => ({ track, queueIndex: i })).filter((x) => x.queueIndex !== cur);
