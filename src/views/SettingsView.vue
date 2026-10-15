@@ -99,114 +99,170 @@ async function clearStatsConfirmed(): Promise<void> {
     </header>
 
     <div class="col">
-      <div class="sec">通用</div>
-      <div class="group">
-        <button class="opt" :class="{ on: autostart }" @click="toggleAutostart">
-          <span>开机自启动<small class="opt-sub">登录 Windows 后自动启动,托盘常驻</small></span>
-          <svg v-if="autostart" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="sec">统计与隐私</div>
-      <div class="group">
-        <button class="opt" :class="{ on: statsEnabled }" @click="setStatsEnabled(!statsEnabled)">
-          <span>听歌统计<small class="opt-sub">记录收听时长与次数,用于统计页榜单;数据仅保存在本机,绝不联网上传。关闭后停止统计并隐藏统计页</small></span>
-          <svg v-if="statsEnabled" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-        <button class="opt" :class="{ armed: clearArmed }" @click="clearStatsConfirmed">
-          <span>清除统计数据<small class="opt-sub">{{ clearArmed ? "再点一次确认清除,此操作不可恢复" : "删除本机全部听歌统计,不可恢复" }}</small></span>
-        </button>
-      </div>
-
-      <div class="sec">皮肤</div>
-      <div class="group">
-        <button
-          v-for="s in skinOptions"
-          :key="s.value"
-          class="opt"
-          :class="{ on: ui.skin === s.value }"
-          @click="setSkin(s.value)"
-        >
-          <span>{{ s.label }}</span>
-          <svg v-if="ui.skin === s.value" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="sec">外观</div>
-      <div class="group">
-        <button
-          v-for="opt in themeOptions"
-          :key="opt.value"
-          class="opt"
-          :class="{ on: ui.themeMode === opt.value }"
-          @click="setThemeMode(opt.value)"
-        >
-          <span>{{ opt.label }}</span>
-          <svg v-if="ui.themeMode === opt.value" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-        <button class="opt" :class="{ on: lyricsOn }" @click="toggleLyrics">
-          <span>桌面歌词<small class="opt-sub">桌面置顶小窗:逐行滚动歌词 + 播放/切歌/音量控制,透明度与位置可调,关闭主窗口仍在</small></span>
-          <svg v-if="lyricsOn" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="sec">导入</div>
-      <div class="group">
-        <div class="row">
-          <span class="row-label">导入文件夹</span>
-          <div class="btns">
-            <button class="mini" @click="addFolder">添加音乐文件夹</button>
-            <button class="mini" @click="openImportDir">打开</button>
-          </div>
+      <!-- 通用 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #98989d">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+              <path d="M5 7.5h7M16.5 7.5H19M5 12h3M11.5 12H19M5 16.5h7M16.5 16.5H19" />
+              <circle cx="14" cy="7.5" r="2" /><circle cx="9.5" cy="12" r="2" /><circle cx="14" cy="16.5" r="2" />
+            </svg>
+          </span>
+          <span>通用</span>
         </div>
-        <p class="dir" :title="lib.importDir">{{ lib.importDir }}</p>
-        <p class="hint">{{ FORMAT_HINT }}</p>
-        <div class="row">
-          <span class="row-label">导入音乐文件</span>
-          <div class="btns">
-            <button class="mini" @click="importMusicPick">选择文件</button>
-          </div>
-        </div>
-        <p class="hint">支持多选;导入后自动通过网易云公开接口匹配封面与歌词。APE / WMA 等非常规格式自动经内置 ffmpeg 转为无损 FLAC,原文件保持不动。</p>
-        <div class="row">
-          <span class="row-label">TMC 音乐包</span>
-          <div class="btns">
-            <button class="mini" @click="importTmcPick">导入 TMC / TMCL</button>
-          </div>
-        </div>
-        <p class="hint">{{ TMC_HINT }}</p>
-      </div>
-
-      <div class="sec">资料库</div>
-      <div class="group">
-        <div class="row">
-          <span class="row-label">{{ lib.tracks.length }} 首歌曲 · {{ lib.folders.length }} 个文件夹</span>
-          <button class="mini" :disabled="lib.scanning" @click="rescan">
-            {{ lib.scanning ? `扫描中 ${lib.scanCurrent}/${lib.scanTotal}` : "重新扫描" }}
+        <div class="group">
+          <button class="opt" @click="toggleAutostart">
+            <span class="label">开机自启动<small class="sub">登录 Windows 后自动启动,托盘常驻</small></span>
+            <span class="switch" :class="{ on: autostart }"><i></i></span>
           </button>
         </div>
-      </div>
+      </section>
 
-      <div class="sec">格式关联</div>
-      <div class="group">
-        <button v-for="a in assocs" :key="a.ext" class="opt" @click="toggleAssoc(a)">
-          <span>{{ a.label }} <span class="ext">.{{ a.ext }}</span></span>
-          <svg v-if="a.registered" class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m5 12.5 4.5 4.5L19 8" />
-          </svg>
-        </button>
-        <p class="hint">{{ ASSOC_HINT }}</p>
-      </div>
+      <!-- 统计与隐私 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #0a84ff">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+              <path d="M5 20v-8M12 20V4M19 20v-5" />
+            </svg>
+          </span>
+          <span>统计与隐私</span>
+        </div>
+        <div class="group">
+          <button class="opt" @click="setStatsEnabled(!statsEnabled)">
+            <span class="label">听歌统计<small class="sub">记录收听时长与次数,用于统计页榜单;数据仅保存在本机,绝不联网上传。关闭后停止统计并隐藏统计页</small></span>
+            <span class="switch" :class="{ on: statsEnabled }"><i></i></span>
+          </button>
+          <button class="opt" :class="{ armed: clearArmed }" @click="clearStatsConfirmed">
+            <span class="label">清除统计数据<small class="sub">{{ clearArmed ? "再点一次确认清除,此操作不可恢复" : "删除本机全部听歌统计,不可恢复" }}</small></span>
+            <span class="act" :class="{ armed: clearArmed }">{{ clearArmed ? "确认清除" : "清除" }}</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 皮肤 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #ff9f0a">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3s6 6.3 6 10.1a6 6 0 0 1-12 0C6 9.3 12 3 12 3z" />
+            </svg>
+          </span>
+          <span>皮肤</span>
+        </div>
+        <div class="group">
+          <div class="opt static">
+            <span class="label">界面材质<small class="sub">液态玻璃:封面氛围驱动的透光材质 · 纸质:印刷节目单质感</small></span>
+            <div class="seg">
+              <button v-for="s in skinOptions" :key="s.value" :class="{ on: ui.skin === s.value }" @click="setSkin(s.value)">
+                {{ s.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 外观 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #5e5ce6">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />
+            </svg>
+          </span>
+          <span>外观</span>
+        </div>
+        <div class="group">
+          <div class="opt static">
+            <span class="label">主题<small class="sub">跟随系统明暗自动切换</small></span>
+            <div class="seg">
+              <button v-for="opt in themeOptions" :key="opt.value" :class="{ on: ui.themeMode === opt.value }" @click="setThemeMode(opt.value)">
+                {{ opt.label }}
+              </button>
+            </div>
+          </div>
+          <button class="opt" @click="toggleLyrics">
+            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:逐行滚动歌词 + 播放/切歌/音量控制,透明度与位置可调,关闭主窗口仍在</small></span>
+            <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 导入 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #30d158">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v10m0 0 4-4m-4 4-4-4" />
+              <path d="M4 17v2.2c0 1 .8 1.8 1.8 1.8h12.4c1 0 1.8-.8 1.8-1.8V17" />
+            </svg>
+          </span>
+          <span>导入</span>
+        </div>
+        <div class="group">
+          <div class="opt static col-wrap">
+            <span class="label">导入文件夹<small class="sub">{{ FORMAT_HINT }}</small></span>
+            <div class="btns">
+              <button class="mini" @click="addFolder">添加音乐文件夹</button>
+              <button class="mini" @click="openImportDir">打开</button>
+            </div>
+            <p class="dir" :title="lib.importDir">{{ lib.importDir }}</p>
+          </div>
+          <div class="opt static">
+            <span class="label">导入音乐文件<small class="sub">支持多选;导入后自动通过网易云公开接口匹配封面与歌词。APE / WMA 等非常规格式自动经内置 ffmpeg 转为无损 FLAC,原文件保持不动</small></span>
+            <div class="btns">
+              <button class="mini" @click="importMusicPick">选择文件</button>
+            </div>
+          </div>
+          <div class="opt static col-wrap">
+            <span class="label">TMC 音乐包<small class="sub">{{ TMC_HINT }}</small></span>
+            <div class="btns">
+              <button class="mini" @click="importTmcPick">导入 TMC / TMCL</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 资料库 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #ff375f">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6.5 9 9v8.2" /><circle cx="6.6" cy="17.6" r="2.5" /><circle cx="17.5" cy="14.8" r="2.5" />
+            </svg>
+          </span>
+          <span>资料库</span>
+        </div>
+        <div class="group">
+          <div class="opt static">
+            <span class="label">曲库规模<small class="sub">{{ lib.tracks.length }} 首歌曲 · {{ lib.folders.length }} 个文件夹 · 重新扫描以发现外部目录的变更</small></span>
+            <div class="btns">
+              <button class="mini" :disabled="lib.scanning" @click="rescan">
+                {{ lib.scanning ? `扫描中 ${lib.scanCurrent}/${lib.scanTotal}` : "重新扫描" }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 格式关联 -->
+      <section class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #64d2ff">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m9.5 14.5 5-5" />
+              <path d="M8 12l-2.1 2.1a3.4 3.4 0 0 0 4.8 4.8L13 16.7M16 12l2.1-2.1a3.4 3.4 0 0 0-4.8-4.8L11 8" />
+            </svg>
+          </span>
+          <span>格式关联</span>
+        </div>
+        <div class="group">
+          <button v-for="a in assocs" :key="a.ext" class="opt" @click="toggleAssoc(a)">
+            <span class="label">{{ a.label }}<small class="sub ext">.{{ a.ext }} · {{ ASSOC_HINT }}</small></span>
+            <span class="switch" :class="{ on: a.registered }"><i></i></span>
+          </button>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -215,84 +271,168 @@ async function clearStatsConfirmed(): Promise<void> {
 .view {
   height: 100%;
   overflow-y: auto;
-  padding: 22px 28px 40px;
+  padding: 22px 28px 48px;
 }
-/* Apple 设置式窄列:长文可读宽度,分组卡片靠左成栏 */
+/* Apple 设置式居中窄列 */
 .col {
-  max-width: 720px;
-  margin-top: 14px;
+  max-width: 660px;
+  margin: 10px auto 0;
 }
 
-.sec {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-3);
-  letter-spacing: 0.4px;
-  padding: 14px 2px 6px;
+/* 节标题:彩色应用图标 + 灰字,系统设置的分类语言 */
+.sect {
+  margin-bottom: 22px;
 }
+.sect-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 2px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tint {
+  width: 27px;
+  height: 27px;
+  flex: none;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tint);
+  color: #fff;
+}
+.tint svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 分组卡片:实底面 + 行间发丝线(iOS 列表组) */
 .group {
   border: 1px solid var(--hairline);
   border-radius: 12px;
-  padding: 4px;
   background: var(--bg-2);
+  overflow: hidden;
 }
+.group > * + * {
+  border-top: 1px solid var(--hairline);
+}
+
+/* 行:标签左,控件右 */
 .opt {
   display: flex;
   align-items: center;
+  gap: 12px;
   width: 100%;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--text-2);
+  padding: 10px 14px;
   text-align: left;
-  transition: background 0.2s var(--ease-out-soft), color 0.2s ease;
+  transition: background 0.18s var(--ease-out-soft);
 }
-.opt:hover {
+button.opt:hover {
   background: var(--hover);
-  color: var(--text);
 }
-.opt.on {
-  color: var(--text);
+.opt.static {
+  cursor: default;
 }
-.opt :deep(.opt-sub) {
+.opt.col-wrap {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  display: block;
+}
+.sub {
   display: block;
   font-size: 11px;
-  font-weight: 400;
   color: var(--text-3);
-  margin-top: 1px;
+  margin-top: 2px;
+  line-height: 1.55;
 }
-.opt .check {
-  width: 14px;
-  height: 14px;
-  margin-left: auto;
+
+/* iOS 式开关:轨道滑块,开启时 accent 着色 */
+.switch {
   flex: none;
+  width: 42px;
+  height: 25px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  position: relative;
+  transition: background 0.22s var(--ease-out-soft);
+}
+.switch i {
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.22s var(--ease-out-soft);
+}
+.switch.on {
+  background: var(--accent);
+}
+.switch.on i {
+  transform: translateX(17px);
+}
+button.opt:active .switch i {
+  width: 23px;
+}
+button.opt:active .switch.on i {
+  transform: translateX(14px);
+}
+
+/* 分段控制器:轨道 + 浮起的选中段 */
+.seg {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  background: var(--pill-bg);
+  border-radius: 9px;
+  padding: 2px;
+}
+.seg button {
+  padding: 4.5px 13px;
+  border-radius: 7px;
+  font-size: 12px;
   color: var(--text-2);
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
-/* 清除统计的两段确认态:文字转警示色,提示「再点一次才执行」 */
-.opt.armed {
-  color: var(--danger);
+.seg button:hover {
+  color: var(--text);
 }
-.opt.armed :deep(.opt-sub) {
+.seg button.on {
+  background: var(--bg-2);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+
+/* 清除统计的行动字:两段确认时转警示色 */
+.act {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.act.armed,
+.opt.armed .label,
+.opt.armed .sub {
   color: var(--danger);
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 12px;
-}
+/* 导入行的小按钮组与路径 */
 .btns {
   display: flex;
   gap: 6px;
   flex: none;
-}
-.row-label {
-  font-size: 13px;
-  color: var(--text);
-  min-width: 0;
 }
 .mini {
   flex: none;
@@ -311,25 +451,22 @@ async function clearStatsConfirmed(): Promise<void> {
   opacity: 0.5;
   cursor: default;
 }
-
 .dir {
+  width: 100%;
   font-size: 11.5px;
   color: var(--text-3);
-  padding: 0 12px 2px;
+  padding: 0 2px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
 }
-.hint {
-  font-size: 12px;
-  color: var(--text-2);
-  padding: 2px 12px 10px;
-  line-height: 1.6;
-}
-.ext {
-  color: var(--text-3);
-  font-size: 11.5px;
+.sub.ext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 </style>
