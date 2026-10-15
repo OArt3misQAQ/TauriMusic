@@ -78,12 +78,17 @@ let queueShuffled = false;
 /** 把当前队列原地洗牌:正在播的曲子提到队首,其余 Fisher-Yates 随机重排 */
 function reshuffleQueue(): void {
   const q = [...player.queue];
+  // 洗牌起始下标:有正在播的曲子时锁定队首不参与交换;空闲(index 无效)则整条全洗
+  let head = 0;
   if (player.index >= 0 && player.index < q.length) {
     q.unshift(q.splice(player.index, 1)[0]);
     player.index = 0;
+    head = 1;
   }
-  for (let i = q.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+  // 交换必须从 head 起:队首一旦参与交换,刚提上来的当前曲会被甩走,
+  // current 立刻指向别的歌——歌词页切随机「当前歌被直接切换」的根源
+  for (let i = q.length - 1; i > head; i--) {
+    const j = head + Math.floor(Math.random() * (i - head + 1));
     [q[i], q[j]] = [q[j], q[i]];
   }
   player.queue = q;
