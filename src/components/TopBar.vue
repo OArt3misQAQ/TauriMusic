@@ -128,6 +128,9 @@ const volFill = computed(() => `${player.volume * 100}%`);
         <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
       </button>
     </div>
+
+    <!-- 播放页打开时的顶栏收口:边缘光线 + 柔和压暗(仅在 np-open 上下文显示,见 style.css) -->
+    <span class="topbar-edge" aria-hidden="true"></span>
   </header>
 </template>
 
@@ -398,5 +401,17 @@ const volFill = computed(() => `${player.volume * 100}%`);
 .cap.close:hover {
   background: var(--danger);
   color: #fff;
+}
+
+/* 顶栏收口线:默认不显示;播放页打开时由 style.css 的 np-open 规则点亮,
+   画在顶栏底边之外(top:100%),随顶栏实际高度自动对齐 */
+.topbar-edge {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 13px;
+  pointer-events: none;
 }
 </style>

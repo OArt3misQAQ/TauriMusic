@@ -404,7 +404,7 @@ html.glass .topbar {
      铬底与内容区共享同一层色温,不再是"左边纯白、右边暖色"两块材料。
      分隔只靠 inset 发丝线,外投影会在氛围上拖出灰带,坚决不用 */
   background:
-    linear-gradient(rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.34)) padding-box,
+    linear-gradient(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.52)) padding-box,
     linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.3) 30%, rgba(255, 255, 255, 0.12) 55%, rgba(255, 255, 255, 0.28) 78%, rgba(255, 255, 255, 0.75) 100%) border-box;
   backdrop-filter: blur(36px) saturate(1.8) brightness(1.04);
   -webkit-backdrop-filter: blur(36px) saturate(1.8) brightness(1.04);
@@ -610,7 +610,7 @@ html.glass:not(.dark) .topbar::before {
   opacity: 1;
   transition: opacity 0.4s var(--ease-out-soft);
   background:
-    linear-gradient(rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.34)) padding-box,
+    linear-gradient(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.52)) padding-box,
     linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.2) 45%, rgba(255, 255, 255, 0.45) 100%) border-box;
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.85),
@@ -673,6 +673,18 @@ html.glass .np-open .topbar .np-pill:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.18);
 }
 
+/* 播放页顶栏收口:顶栏在播放页里融进黑纱(玻璃底隐去、无投影),
+   一条两端渐隐的 1px 边缘光线 + 线下 12px 柔和压暗,给出"玻璃折边"的
+   收束感——既标出过渡,又不至像实线那样把通栏切成两块。
+   深色/浅色玻璃下播放页都是暗舞台,故统一用白光;纸质皮肤顶栏有实线分隔,不点亮 */
+html.glass .np-open .topbar .topbar-edge {
+  display: block;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.13) 14%, rgba(255, 255, 255, 0.13) 86%, transparent)
+      top / 100% 1px no-repeat,
+    linear-gradient(180deg, rgba(0, 0, 0, 0.14), transparent);
+}
+
 /* 托盘迷你面板:窗口即面板,材质铺满整窗(圆角/投影交给系统 DWM)。
    独立小窗背后没有页面内容,backdrop-filter 无物可虚化
    (WebView 采不到窗口外的桌面),玻璃感用"近实心渐变 + 边缘高光"模拟 */
@@ -699,10 +711,11 @@ html.glass .content {
   box-shadow: none;
 }
 
-/* 亮色玻璃:内容区一层薄白托底——只给文字一个稳定底色,
-   氛围透色主要靠这层尽量薄(纱已回调,这里再厚就又盖没了) */
+/* Apple 结构:彩色留给封面与铬条,内容区是干净的白画布。
+   白托底提到 0.9 档——氛围只余一线色温呼吸,网格封面成为页面上唯一的色源;
+   铬条(侧栏/顶栏)保持透出氛围的亮玻璃,明暗层次由此而来 */
 html.glass:not(.dark) .content {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.12));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(255, 255, 255, 0.9));
 }
 
 /* 胶囊形控件:搜索框与导航项 */
