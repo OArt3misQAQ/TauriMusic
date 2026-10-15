@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { fmtTime, playTracks, shuffleContext } from "../stores/player";
+import { fmtTime, playTracks, shuffleList } from "../stores/player";
 import { go, openAlbum, openArtist, ui } from "../stores/ui";
 import { openCtx, type CtxItem } from "../stores/context";
 import { exportTrackTmc } from "../stores/library";
@@ -28,7 +28,7 @@ function playAll(): void {
 function shuffleAll(): void {
   const list = playable.value;
   if (list.length === 0) return;
-  shuffleContext(list);
+  shuffleList(list);
 }
 
 /** 点击某行:以整个播放列表为队列,从该行开始播放 */

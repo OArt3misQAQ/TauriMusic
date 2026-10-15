@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { allSongs, lib, enrichAllNetease } from "../stores/library";
-import { shuffleContext } from "../stores/player";
+import { shuffleList } from "../stores/player";
 import TrackList from "../components/TrackList.vue";
 import LibGate from "../components/LibGate.vue";
 
@@ -8,7 +8,7 @@ import LibGate from "../components/LibGate.vue";
 function shuffleAll(): void {
   const songs = allSongs.value;
   if (songs.length === 0) return;
-  shuffleContext(songs);
+  shuffleList(songs);
 }
 </script>
 

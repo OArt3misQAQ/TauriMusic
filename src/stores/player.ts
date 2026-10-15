@@ -70,6 +70,8 @@ let playHistory: number[] = [];
 let bag: number[] = [];
 /** 袋子对应的队列引用:队列被替换(playTracks/删除清理)时自动重建 */
 let bagQueue: Track[] | null = null;
+/** 当前队列来自哪份列表(引用比对):「随机播放」据此判断是重洗还是换列表 */
+let queueSource: Track[] | null = null;
 /** 随机模式 = 队列已被可见洗牌(切模式/随机按钮时重排),顺序推进即可 */
 let queueShuffled = false;
 
@@ -254,6 +256,7 @@ export function playTracks(tracks: Track[], start = 0): void {
   playHistory = [];
   bag = [];
   bagQueue = q;
+  queueSource = tracks;
   load(player.queue[player.index]);
 }
 
@@ -276,10 +279,20 @@ function shuffled<T>(arr: T[]): T[] {
 /** 随机播放语义(绝不自动出声):
  *  有歌在放/暂停中 → 队列改为 [当前曲, ...打乱的列表],当前歌放完自然流入随机顺序;
  *  没在播 → 只备好洗牌队列,等用户自己按播放,绝不自动开播 */
-export function shuffleContext(list: Track[]): void {
+/** 列表「随机播放」——硬保证:绝不打断当前歌、绝不自动出声。
+ *  同一列表已在队列 → 只重洗整条队列,当前曲置顶续播;
+ *  其他列表 → 当前曲置顶续播,放完自然流入打乱的新列表;
+ *  空闲 → 只备好打乱的队列,等用户自己按播放 */
+export function shuffleList(list: Track[]): void {
   if (list.length === 0) return;
   setMode("shuffle");
   const cur = current.value;
+  if (queueSource === list) {
+    // 同一份列表已在队列:整条重排即可(当前曲已在队首续播)
+    reshuffleQueue();
+    playHistory = [];
+    return;
+  }
   if (cur) {
     const rest = shuffled(list.filter((t) => t.id !== cur.id));
     player.queue = [cur, ...rest];
@@ -291,6 +304,7 @@ export function shuffleContext(list: Track[]): void {
   playHistory = [];
   bag = [];
   bagQueue = player.queue;
+  queueSource = list;
 }
 
 export function toggle(): void {
