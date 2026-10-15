@@ -5,9 +5,9 @@ import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 
 /** 桌面歌词小窗(独立 WebView 窗口,常驻后台):
  *  状态/歌词由主窗口经 media://state、media://lyrics 广播,操作经 media://action 回传;
- *  透明度与位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置弹窗)。
- *  窗口即面板:不依赖 WebView 透明(Windows 透出 runtime 黑色软缓冲),
- *  恒定深色烟熏面板保证歌词可读性,透明度滑杆调节面板整体的"浓淡" */
+ *  透明度与位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置页)。
+ *  设计语言:「沉浸文字」——窗口全透明,歌词大字直接浮在桌面上,
+ *  可读性靠多层投影而非底板;控制条是悬停才浮现的烟熏玻璃胶囊 */
 
 interface WidgetState {
   title: string;
@@ -66,6 +66,11 @@ const nextLine = computed(() => {
   return state.value.artist || "未在播放";
 });
 
+/* 细进度线:position/duration,缓动跟随 */
+const pct = computed(() =>
+  state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
+);
+
 /* 音量:拖动中本地预览,经 volume:<0~1> 动作回传主窗口实时生效 */
 const volDragging = ref(false);
 const volLocal = ref(1);
@@ -82,7 +87,7 @@ function onVolCommit(e: Event): void {
   void emit("media://action", `volume:${v}`);
 }
 
-/* 面板浓淡:0.3~1,作用于整块内容(窗口底是恒定深色,调低 = 面板淡出融进夜色) */
+/* 面板浓淡:0.3~1,作用于整块内容(纯文字浮动模式下调低 = 文字本身淡出) */
 const opacity = ref(clampOpacity(Number(localStorage.getItem("tm-lyrics-opacity") ?? "1")));
 function clampOpacity(v: number): number {
   return Number.isFinite(v) ? Math.min(1, Math.max(0.3, v)) : 1;
@@ -98,7 +103,7 @@ function act(a: string): void {
   void emit("media://action", a);
 }
 function closeWidget(): void {
-  // 与设置弹窗的开关共享同一份 localStorage(storage 事件自动同步)
+  // 与设置页的开关共享同一份 localStorage(storage 事件自动同步)
   localStorage.setItem("tm-lyrics-on", "0");
   void win.hide();
 }
@@ -149,13 +154,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);内容透明度由铭牌滑杆调节 -->
+  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,文字直接浮于桌面 -->
   <div class="lyr-root" data-tauri-drag-region="deep" :style="{ opacity }">
     <div class="lyr-lines" data-tauri-drag-region="deep">
       <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
       <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
+      <div class="progress" aria-hidden="true">
+        <div class="progress-fill" :style="{ width: pct + '%' }"></div>
+      </div>
     </div>
 
+    <!-- 控制胶囊:悬停浮现,烟熏玻璃与托盘卡同语言 -->
     <div class="lyr-ctl">
       <button class="cbtn" title="上一曲" @click="act('prev')">
         <svg viewBox="0 0 24 24" fill="currentColor">
@@ -222,7 +231,7 @@ onUnmounted(() => {
         step="0.05"
         :value="opacity"
         :style="{ '--fill': ((opacity - 0.3) / 0.7) * 100 + '%' }"
-        title="面板透明度"
+        title="文字浓淡"
         @input="onOpacity"
         @change="onOpacityCommit"
       />
@@ -239,71 +248,108 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 窗口即面板:恒定深色烟熏(桌面歌词的可读性基准),内容透明度可调;
-   圆角与投影交给系统 DWM,整窗可拖 */
+/* 沉浸文字模式:窗口全透明(配置 transparent),无底板;
+   可读性由文字的多层投影承担,控制胶囊悬停才浮现 */
 .lyr-root {
   height: 100%;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  padding: 10px 18px 12px;
-  background: linear-gradient(180deg, #323438 0%, #1d1e21 30%, #0e0f11 72%, #151619 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 30px 46px -34px rgba(255, 255, 255, 0.09);
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 22px 12px;
   user-select: none;
 }
 
 /* ===== 歌词区 ===== */
 .lyr-lines {
-  flex: 1;
-  min-height: 0;
+  flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 4px;
   overflow: hidden;
 }
-/* 当前句:大字重白字 + 投影,暂停时降半透明示意"停机" */
+/* 当前句:大字重 + 品牌色渐变填充。
+   填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜(双层,柔而不晕) */
 .line-main {
-  font-size: clamp(20px, 15vh, 36px);
+  font-size: clamp(22px, 16vh, 38px);
   font-weight: 800;
-  line-height: 1.25;
-  color: #fff;
+  line-height: 1.22;
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.6);
-  transition: opacity 0.3s ease;
+  background: linear-gradient(100deg, #ffffff 34%, #ffe9e2 58%, #f0a08e 120%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) drop-shadow(0 4px 18px rgba(0, 0, 0, 0.45));
+  transition: opacity 0.3s ease, filter 0.3s ease;
 }
 .line-main.idle {
-  opacity: 0.55;
+  /* 暂停/未播放:去渐变降白,示意停机 */
+  background: none;
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.55);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
 }
-/* 下一句:次级灰字,预告歌词走向 */
+/* 下一句:小一号的次级白,预告走向 */
 .line-next {
-  font-size: clamp(13px, 8vh, 18px);
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.5);
+  font-size: clamp(13px, 8vh, 19px);
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.62);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.8),
+    0 2px 10px rgba(0, 0, 0, 0.4);
 }
 
-/* ===== 控制行 ===== */
+/* 细进度线:贴在文字块下的 2.5px 圆角线,随播放推进 */
+.progress {
+  width: min(60%, 320px);
+  height: 2.5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+  margin-top: 2px;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.9), var(--accent));
+  transition: width 0.25s linear;
+}
+
+/* ===== 控制胶囊:默认隐身,悬停窗口时从下方 6px 浮现 ===== */
 .lyr-ctl {
   flex: none;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  /* 烟熏玻璃胶囊:窗口背外无内容可采,用近实心渐变 + 顶缘高光模拟 */
+  background: linear-gradient(180deg, rgba(50, 52, 56, 0.96) 0%, rgba(20, 21, 24, 0.96) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.28s var(--ease-out-soft), transform 0.28s var(--ease-out-soft);
+}
+.lyr-root:hover .lyr-ctl {
+  opacity: 1;
+  transform: translateY(0);
 }
 .gap {
-  width: 10px;
+  width: 8px;
   flex: none;
 }
 .cbtn {
