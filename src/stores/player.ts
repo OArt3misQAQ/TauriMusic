@@ -264,6 +264,35 @@ export function playTrack(track: Track, context?: Track[]): void {
   playTracks(list, Math.max(0, idx));
 }
 
+function shuffled<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** 随机播放语义(绝不自动出声):
+ *  有歌在放/暂停中 → 队列改为 [当前曲, ...打乱的列表],当前歌放完自然流入随机顺序;
+ *  没在播 → 只备好洗牌队列,等用户自己按播放,绝不自动开播 */
+export function shuffleContext(list: Track[]): void {
+  if (list.length === 0) return;
+  setMode("shuffle");
+  const cur = current.value;
+  if (cur) {
+    const rest = shuffled(list.filter((t) => t.id !== cur.id));
+    player.queue = [cur, ...rest];
+    player.index = 0;
+  } else {
+    player.queue = shuffled(list);
+    player.index = 0;
+  }
+  playHistory = [];
+  bag = [];
+  bagQueue = player.queue;
+}
+
 export function toggle(): void {
   if (!current.value) return;
   const a = ensureAudio();

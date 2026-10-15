@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { albumByKey, enrichAlbumNetease, deleteTracks, exportAlbumTmca } from "../stores/library";
 import { useConfirmableAction } from "../composables/useConfirmableAction";
-import { playTracks, setMode } from "../stores/player";
+import { playTracks, shuffleContext } from "../stores/player";
 import { ui, go } from "../stores/ui";
 import TrackList from "../components/TrackList.vue";
 
@@ -24,8 +24,7 @@ const meta = computed(() =>
 
 function shuffleAll(): void {
   if (!album.value) return;
-  setMode("shuffle");
-  playTracks(album.value.tracks, Math.floor(Math.random() * album.value.tracks.length));
+  shuffleContext(album.value.tracks);
 }
 
 const enriching = ref(false);

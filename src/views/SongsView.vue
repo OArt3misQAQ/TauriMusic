@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { allSongs, lib, enrichAllNetease } from "../stores/library";
-import { playTracks, setMode } from "../stores/player";
+import { shuffleContext } from "../stores/player";
 import TrackList from "../components/TrackList.vue";
 import LibGate from "../components/LibGate.vue";
 
-/** 全库随机播放:队列 = 全部歌曲,模式切到随机 */
+/** 全库随机播放:队列 = 全部歌曲洗牌,不打断正在播的歌 */
 function shuffleAll(): void {
   const songs = allSongs.value;
   if (songs.length === 0) return;
-  setMode("shuffle");
-  playTracks(songs, Math.floor(Math.random() * songs.length));
+  shuffleContext(songs);
 }
 </script>
 
