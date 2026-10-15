@@ -4255,14 +4255,12 @@ mod tests {
         fs::create_dir_all(&imp).unwrap();
         let ape = dir.join("凉宫春日.ape");
         fs::write(&ape, b"ape-bytes").unwrap();
-        let got =
-            copy_into_import_dir(&ape, &imp, &[], &Default::default(), &mut Vec::new(), None);
+        let got = copy_into_import_dir(&ape, &imp, &[], &Default::default(), &mut Vec::new(), None);
         assert!(matches!(got, Ok(CopyResult::Skipped)));
         assert!(!imp.join("凉宫春日.flac").exists());
         let lrc = dir.join("凉宫春日.lrc");
         fs::write(&lrc, "[00:01]test").unwrap();
-        let got =
-            copy_into_import_dir(&lrc, &imp, &[], &Default::default(), &mut Vec::new(), None);
+        let got = copy_into_import_dir(&lrc, &imp, &[], &Default::default(), &mut Vec::new(), None);
         assert!(matches!(got, Ok(CopyResult::Copied)));
         assert!(imp.join("凉宫春日.lrc").exists());
         let _ = fs::remove_dir_all(&dir);
