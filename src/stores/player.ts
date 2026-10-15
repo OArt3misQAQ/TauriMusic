@@ -94,8 +94,21 @@ function takeShuffleIndex(n: number, current: number): number {
       }
       continue;
     }
-    const idx = bag.pop();
+    let idx = bag.pop();
     if (idx === undefined) return current; // n<=1 情形,调用方已拦截,兜底
+    // 同专辑规避:全库队列按专辑聚簇,均匀随机也会偶发同专辑连播。
+    // 候选与当前曲同专辑且袋里还有异专辑候选时,换一个异专辑的上来,
+    // 同专辑的压回袋底(很久之后才轮到)
+    if (n > 2 && current >= 0 && current < n && bag.length > 0) {
+      const curAlbum = player.queue[current]?.album;
+      if (curAlbum && player.queue[idx]?.album === curAlbum) {
+        const alt = bag.findIndex((b) => player.queue[b]?.album !== curAlbum);
+        if (alt >= 0) {
+          bag.unshift(idx);
+          idx = bag.splice(alt, 1)[0];
+        }
+      }
+    }
     return idx;
   }
 }
@@ -194,6 +207,21 @@ export function playTrack(track: Track, context?: Track[]): void {
   const list = context && context.length > 0 ? context : [track];
   const idx = list.findIndex((t) => t.id === track.id);
   playTracks(list, Math.max(0, idx));
+}
+
+/** 随机模式键切入随机时,把队列从当前上下文(专辑/歌单)扩展为整库:
+ *  当前曲目无缝续播(只换队列引用与下标,不动音频),播放历史与洗牌袋作废重建。
+ *  各列表自己的「随机播放」按钮仍是列表内随机,不走此路 */
+export function expandQueueToLibrary(all: Track[]): void {
+  if (all.length === 0) return;
+  const cur = current.value;
+  let idx = cur ? all.findIndex((t) => t.id === cur.id) : -1;
+  if (idx < 0) idx = 0;
+  player.queue = all;
+  player.index = idx;
+  playHistory = [];
+  bag = [];
+  bagQueue = null;
 }
 
 export function toggle(): void {
