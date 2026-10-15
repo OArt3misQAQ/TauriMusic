@@ -320,6 +320,17 @@ html.glass:not(.dark) .ambient-img {
   filter: blur(88px) saturate(1.3) brightness(1.4);
 }
 
+/* 暗色玻璃:辉光要"透"过烟熏画布而不是被黑纱压死——
+   封面亮度提到 0.62 保持色相流动,黑纱减薄成轻晕,
+   玻璃画布(0.6 档)再收一道,三层叠出深色里也有通透的彩色 */
+html.dark.glass .ambient-scrim {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.08) 42%, rgba(0, 0, 0, 0.3) 100%);
+}
+
+html.dark.glass .ambient-img {
+  filter: blur(88px) saturate(1.8) brightness(0.62);
+}
+
 /* 玻璃模式材质令牌:跟随深浅色 —— 白玻璃 / 黑玻璃 */
 html.glass:not(.dark) {
   --text: #1d1d1f;
@@ -345,6 +356,9 @@ html.dark.glass {
   --card-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
   --scrollbar: rgba(255, 255, 255, 0.32);
   --bar-bg: rgba(22, 23, 26, 0.6);
+  /* 玻璃下的"实底面"转半透:分组卡片/统计卡浮在烟熏画布上,而非漆黑贴片 */
+  --bg-2: rgba(255, 255, 255, 0.045);
+  --bg-3: rgba(255, 255, 255, 0.08);
 }
 
 /* 停靠式玻璃面板:贴合窗口边缘(窗口圆角交给系统) */
@@ -424,7 +438,7 @@ html.dark.glass .sidebar {
      天生发紫;整体透明度也下调一档,让背后的氛围透进来,
      玻璃才"透",而不是一块不动的紫灰色板 */
   background:
-    linear-gradient(180deg, rgba(50, 52, 56, 0.5) 0%, rgba(29, 30, 33, 0.48) 30%, rgba(14, 15, 17, 0.6) 72%, rgba(21, 22, 25, 0.55) 100%) padding-box,
+    linear-gradient(180deg, rgba(50, 52, 56, 0.4) 0%, rgba(29, 30, 33, 0.38) 30%, rgba(14, 15, 17, 0.5) 72%, rgba(21, 22, 25, 0.45) 100%) padding-box,
     /* 边缘只在顶边留一线高光,侧面近乎无光 */
     linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.06) 10%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.12) 100%) border-box;
   /* 42px 的重模糊在深色上是"奶白感"的来源:少糊一点,通透就回来一点 */
@@ -461,7 +475,7 @@ html.dark.glass .topbar::before {
   opacity: 1;
   transition: opacity 0.4s var(--ease-out-soft);
   background:
-    linear-gradient(180deg, rgba(50, 52, 56, 0.5) 0%, rgba(29, 30, 33, 0.48) 30%, rgba(14, 15, 17, 0.6) 72%, rgba(21, 22, 25, 0.55) 100%) padding-box,
+    linear-gradient(180deg, rgba(50, 52, 56, 0.4) 0%, rgba(29, 30, 33, 0.38) 30%, rgba(14, 15, 17, 0.5) 72%, rgba(21, 22, 25, 0.45) 100%) padding-box,
     linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.06) 10%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.12) 100%) border-box;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
@@ -716,6 +730,13 @@ html.glass .content {
    铬条(侧栏/顶栏)保持透出氛围的亮玻璃,明暗层次由此而来 */
 html.glass:not(.dark) .content {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(255, 255, 255, 0.9));
+}
+
+/* 暗色玻璃:内容区是烟熏玻璃画布而非不透明黑板——
+   封面辉光以低亮度透进画布,全应用随音乐同色呼吸,塑料感由此消失;
+   纱体偏墨(0.6+),白字对比度不受影响 */
+html.dark.glass .content {
+  background: linear-gradient(180deg, rgba(16, 16, 20, 0.64), rgba(11, 11, 14, 0.58));
 }
 
 /* 胶囊形控件:搜索框与导航项 */
