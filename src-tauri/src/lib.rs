@@ -3923,6 +3923,13 @@ pub fn run() {
             refresh_asset_scope(handle);
             // 清理超过保留期的回收站条目
             purge_expired_trash(handle);
+            // 窗口在配置里全部 create:false,由这里手动创建:Tauri 内部顺序是
+            // 先建窗口(WebView 立即加载前端)后跑本钩子,冷启动时前端会抢在
+            // .manage 之前调命令,报「state not managed」→「曲库读取失败」。
+            // 状态注册完毕后才开始加载页面,竞态从根上消除
+            for window_config in app.config().app.windows.iter() {
+                tauri::WebviewWindowBuilder::from_config(handle, window_config)?.build()?;
+            }
             // 命令行/双击"打开方式"传入的文件
             let cli_args: Vec<String> = std::env::args().collect();
             handle_open_paths(handle, &cli_args);

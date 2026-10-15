@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "create": false,
         "title": "TauriMusic",
         "width": 1280,
         "height": 832,
@@ -23,6 +24,7 @@
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService"
       },
       {
+        "create": false,
         "label": "tray",
         "title": "TauriMusic 托盘面板",
         "width": 360,
@@ -37,6 +39,7 @@
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService"
       },
       {
+        "create": false,
         "label": "lyrics",
         "title": "TauriMusic 桌面歌词",
         "width": 720,
