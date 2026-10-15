@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from "vue";
-import { MODE_LABEL, player, expandQueueToLibrary, type PlayMode } from "../stores/player";
-import { lib } from "../stores/library";
+import { MODE_LABEL, player, type PlayMode } from "../stores/player";
 
 // 气泡弹出方向由使用处决定:顶栏贴着窗口上沿,向上弹会被窗体裁掉看不见,
 // 只有向下弹才可见;播放页控制行在窗口底部,默认向上弹
@@ -16,14 +15,9 @@ let hintTimer = 0;
 function cycle(): void {
   const order: PlayMode[] = ["seq", "loop", "one", "shuffle"];
   const i = order.indexOf(player.mode);
-  const next = order[(i + 1) % order.length];
-  player.mode = next;
-  // 模式键切入随机 = 全库随机:上下文队列(专辑/歌单)自动扩展为整库,
-  // 当前曲目无缝续播;各列表自己的「随机播放」按钮仍是列表内随机
-  if (next === "shuffle") {
-    const all = lib.tracks;
-    if (all.length > 0 && all.length !== player.queue.length) expandQueueToLibrary(all);
-  }
+  player.mode = order[(i + 1) % order.length];
+  // 模式键只切换播放模式,不改动队列:随机范围 = 点「随机播放」时所在的列表
+  // (歌曲页=全库 / 专辑页=该专辑 / 歌单页=该歌单),上下文语义归属用户
   hint.value = MODE_LABEL[player.mode];
   window.clearTimeout(hintTimer);
   hintTimer = window.setTimeout(() => (hint.value = ""), 1300);
