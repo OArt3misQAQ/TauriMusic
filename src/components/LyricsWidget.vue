@@ -87,16 +87,29 @@ function onVolCommit(e: Event): void {
   void emit("media://action", `volume:${v}`);
 }
 
-/* 面板浓淡:0.3~1,作用于整块内容(纯文字浮动模式下调低 = 文字本身淡出) */
-const opacity = ref(clampOpacity(Number(localStorage.getItem("tm-lyrics-opacity") ?? "1")));
-function clampOpacity(v: number): number {
-  return Number.isFinite(v) ? Math.min(1, Math.max(0.3, v)) : 1;
+/* 面板浓淡 → 背景不透明度:0.05~0.9,只作用于贴文字的背景板,
+   文字恒定全亮(用户反馈:调的是透明度不是文字亮度) */
+const plateAlpha = ref(clampPlate(Number(localStorage.getItem("tm-lyrics-opacity") ?? "0.55")));
+function clampPlate(v: number): number {
+  return Number.isFinite(v) ? Math.min(0.9, Math.max(0.05, v)) : 0.55;
 }
 function onOpacity(e: Event): void {
-  opacity.value = clampOpacity(Number((e.target as HTMLInputElement).value));
+  plateAlpha.value = clampPlate(Number((e.target as HTMLInputElement).value));
 }
 function onOpacityCommit(): void {
-  localStorage.setItem("tm-lyrics-opacity", String(opacity.value));
+  localStorage.setItem("tm-lyrics-opacity", String(plateAlpha.value));
+}
+
+/* 歌词大小:0.6~1.6 缩放,作用于主/副行字号 */
+const fsize = ref(clampSize(Number(localStorage.getItem("tm-lyrics-size") ?? "1")));
+function clampSize(v: number): number {
+  return Number.isFinite(v) ? Math.min(1.6, Math.max(0.6, v)) : 1;
+}
+function onSize(e: Event): void {
+  fsize.value = clampSize(Number((e.target as HTMLInputElement).value));
+}
+function onSizeCommit(): void {
+  localStorage.setItem("tm-lyrics-size", String(fsize.value));
 }
 
 function act(a: string): void {
@@ -154,18 +167,26 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,文字直接浮于桌面 -->
-  <div class="lyr-root" data-tauri-drag-region="deep" :style="{ opacity }">
-    <div class="lyr-lines" data-tauri-drag-region="deep">
-      <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
-      <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
-      <div class="progress" aria-hidden="true">
-        <div class="progress-fill" :style="{ width: pct + '%' }"></div>
+  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,背景板贴文字、透明度可调 -->
+  <div
+    class="lyr-root"
+    data-tauri-drag-region="deep"
+    :style="{ '--fs': fsize, '--pa': plateAlpha }"
+  >
+    <div class="lyr-plate" data-tauri-drag-region="deep">
+      <div class="lyr-lines" data-tauri-drag-region="deep">
+        <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
+        <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
+        <div class="progress" aria-hidden="true">
+          <div class="progress-fill" :style="{ width: pct + '%' }"></div>
+        </div>
       </div>
     </div>
 
-    <!-- 控制胶囊:悬停浮现,烟熏玻璃与托盘卡同语言 -->
+    <!-- 控制胶囊:悬停浮现,烟熏玻璃与托盘卡同语言;行首显示当前歌曲 -->
     <div class="lyr-ctl">
+      <span class="song" :title="state.title">{{ state.title || "未在播放" }}</span>
+      <span class="vline"></span>
       <button class="cbtn" title="上一曲" @click="act('prev')">
         <svg viewBox="0 0 24 24" fill="currentColor">
           <path d="M11.4 6.4v11.2L3.6 12z" />
@@ -220,18 +241,36 @@ onUnmounted(() => {
       <span class="gap"></span>
 
       <svg class="cico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+        <path d="M4 7h16M6 12h13M8 17h10" />
+      </svg>
+      <input
+        class="mini-slider"
+        type="range"
+        min="0.6"
+        max="1.6"
+        step="0.05"
+        :value="fsize"
+        :style="{ '--fill': ((fsize - 0.6) / 1.0) * 100 + '%' }"
+        title="歌词大小"
+        @input="onSize"
+        @change="onSizeCommit"
+      />
+
+      <span class="gap"></span>
+
+      <svg class="cico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
         <rect x="4" y="4" width="12" height="12" rx="2" />
         <rect x="9" y="9" width="11" height="11" rx="2" />
       </svg>
       <input
         class="mini-slider"
         type="range"
-        min="0.3"
-        max="1"
+        min="0.05"
+        max="0.9"
         step="0.05"
-        :value="opacity"
-        :style="{ '--fill': ((opacity - 0.3) / 0.7) * 100 + '%' }"
-        title="文字浓淡"
+        :value="plateAlpha"
+        :style="{ '--fill': ((plateAlpha - 0.05) / 0.85) * 100 + '%' }"
+        title="背景不透明度"
         @input="onOpacity"
         @change="onOpacityCommit"
       />
@@ -248,8 +287,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 沉浸文字模式:窗口全透明(配置 transparent),无底板;
-   可读性由文字的多层投影承担,控制胶囊悬停才浮现 */
+/* 沉浸文字模式:窗口全透明(配置 transparent);
+   背景板贴文字(不铺满窗口),不透明度由滑杆调节;文字恒定全亮,
+   可读性由文字的多层投影 + 背景板共同承担,控制胶囊悬停才浮现 */
 .lyr-root {
   height: 100%;
   box-sizing: border-box;
@@ -261,6 +301,19 @@ onUnmounted(() => {
   user-select: none;
 }
 
+/* 背景板:贴歌词内容,烟熏深色,不透明度滑杆(0.05~0.9)直接映射板体透明度 */
+.lyr-plate {
+  padding: 14px 26px 12px;
+  border-radius: 18px;
+  background: linear-gradient(
+    180deg,
+    rgba(22, 23, 27, calc(var(--pa) * 0.96)),
+    rgba(9, 10, 12, var(--pa))
+  );
+  border: 1px solid rgba(255, 255, 255, calc(var(--pa) * 0.16));
+  box-shadow: 0 12px 38px rgba(0, 0, 0, calc(var(--pa) * 0.55));
+}
+
 /* ===== 歌词区 ===== */
 .lyr-lines {
   flex: none;
@@ -270,10 +323,10 @@ onUnmounted(() => {
   gap: 4px;
   overflow: hidden;
 }
-/* 当前句:大字重 + 品牌色渐变填充。
+/* 当前句:大字重 + 品牌色渐变填充,字号随 --fs 缩放。
    填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜(双层,柔而不晕) */
 .line-main {
-  font-size: clamp(22px, 16vh, 38px);
+  font-size: calc(clamp(22px, 16vh, 38px) * var(--fs, 1));
   font-weight: 800;
   line-height: 1.22;
   text-align: center;
@@ -296,7 +349,7 @@ onUnmounted(() => {
 }
 /* 下一句:小一号的次级白,预告走向 */
 .line-next {
-  font-size: clamp(13px, 8vh, 19px);
+  font-size: calc(clamp(13px, 8vh, 19px) * var(--fs, 1));
   font-weight: 650;
   color: rgba(255, 255, 255, 0.62);
   text-align: center;
@@ -347,6 +400,22 @@ onUnmounted(() => {
 .lyr-root:hover .lyr-ctl {
   opacity: 1;
   transform: translateY(0);
+}
+/* 当前歌曲名:胶囊行首,超长省略 */
+.song {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vline {
+  width: 1px;
+  height: 16px;
+  flex: none;
+  background: rgba(255, 255, 255, 0.16);
 }
 .gap {
   width: 8px;
