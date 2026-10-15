@@ -101,6 +101,8 @@ export interface LyricsPayload {
 export interface ImportReport {
   foldersAdded: number;
   filesCopied: number;
+  /** 其中经 ffmpeg 转码为 FLAC 的非常规格式(ape/wma 等) */
+  transcoded: number;
   skipped: number;
   duplicates: number;
 }

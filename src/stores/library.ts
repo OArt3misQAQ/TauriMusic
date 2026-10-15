@@ -319,6 +319,7 @@ export async function importDropped(paths: string[]): Promise<void> {
     try {
       const r = await api.importPaths(rest);
       if (r.filesCopied) parts.push(`导入 ${r.filesCopied} 个文件`);
+      if (r.transcoded) parts.push(`转码 ${r.transcoded} 个非常规格式`);
       if (r.foldersAdded) parts.push(`添加 ${r.foldersAdded} 个文件夹`);
       if (r.duplicates) parts.push(`跳过 ${r.duplicates} 个重复`);
       if (r.skipped) parts.push(`跳过 ${r.skipped} 个不支持`);

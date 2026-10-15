@@ -104,13 +104,16 @@ fn open_import_dir(app: tauri::AppHandle, state: State<AppState>) -> Result<Stri
 pub struct ImportReport {
     folders_added: u32,
     files_copied: u32,
+    /// 其中经 ffmpeg 转码为 FLAC 的非常规格式(ape/wma 等)数量
+    transcoded: u32,
     skipped: u32,
     duplicates: u32,
 }
 
-/// 单文件复制结果:成功 / 内容重复跳过 / 不支持或已存在跳过
+/// 单文件导入结果:直接复制成功 / 转码成功 / 内容重复跳过 / 不支持或已存在跳过
 enum CopyResult {
     Copied,
+    Transcoded,
     Duplicate,
     Skipped,
 }
@@ -123,8 +126,8 @@ async fn import_paths(paths: Vec<String>, app: tauri::AppHandle) -> Result<Impor
         .map_err(|e| e.to_string())?
 }
 
-/// 散装导入报告:(登记文件夹数, 复制数, 跳过数, 重复数, 本次收集的指纹)
-type LooseImportResult = (u32, u32, u32, u32, Vec<(PathBuf, String)>);
+/// 散装导入报告:(登记文件夹数, 直接复制数, 转码数, 跳过数, 重复数, 本次收集的指纹)
+type LooseImportResult = (u32, u32, u32, u32, u32, Vec<(PathBuf, String)>);
 
 /// 把一批路径导入:文件夹登记进曲库,散装文件复制进导入目录并收集 SHA 指纹。
 /// lib 锁只用于登记与快照,文件复制与哈希在锁外进行(大文件哈希不该卡住其他命令);
@@ -134,9 +137,11 @@ fn import_loose(
     paths: &[PathBuf],
     import_dir: &Path,
     state: &AppState,
+    ffmpeg: Option<&Path>,
 ) -> Result<LooseImportResult, String> {
     let mut folders_added = 0u32;
     let mut files_copied = 0u32;
+    let mut transcoded = 0u32;
     let mut skipped = 0u32;
     let mut duplicates = 0u32;
     let mut session_shas: Vec<(PathBuf, String)> = Vec::new();
@@ -179,13 +184,21 @@ fn import_loose(
         if !path.is_file() {
             continue;
         }
-        match copy_into_import_dir(path, import_dir, &known, &known_shas, &mut session_shas) {
+        match copy_into_import_dir(
+            path,
+            import_dir,
+            &known,
+            &known_shas,
+            &mut session_shas,
+            ffmpeg,
+        ) {
             Ok(CopyResult::Copied) => {
                 files_copied += 1;
                 if let (Ok(m), Some(name)) = (fs::metadata(path), path.file_name()) {
                     known.push((import_dir.join(name).to_string_lossy().to_string(), m.len()));
                 }
             }
+            Ok(CopyResult::Transcoded) => transcoded += 1,
             Ok(CopyResult::Duplicate) => duplicates += 1,
             _ => skipped += 1,
         }
@@ -193,6 +206,7 @@ fn import_loose(
     Ok((
         folders_added,
         files_copied,
+        transcoded,
         skipped,
         duplicates,
         session_shas,
@@ -202,12 +216,14 @@ fn import_loose(
 fn import_paths_blocking(paths: &[String], app: &tauri::AppHandle) -> Result<ImportReport, String> {
     let state = app.state::<AppState>();
     let import_dir = ensure_import_dir(app, &state)?;
+    let ffmpeg = find_ffmpeg(app);
     let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let (folders_added, files_copied, skipped, duplicates, session_shas) =
-        import_loose(&path_bufs, &import_dir, &state)?;
+    let (folders_added, files_copied, transcoded, skipped, duplicates, session_shas) =
+        import_loose(&path_bufs, &import_dir, &state, ffmpeg.as_deref())?;
     let report = ImportReport {
         folders_added,
         files_copied,
+        transcoded,
         skipped,
         duplicates,
     };
@@ -314,25 +330,58 @@ fn same_file_content(a: &Path, b: &Path) -> bool {
 }
 
 /// 把单个文件复制进导入目录;只收音频与 .lrc 歌词。
+/// 非常规格式(ape/wma 等,见 TRANSCODE_EXTS)在有 ffmpeg 时转成 FLAC 入库,原文件不动。
 /// 去重规则:同名同大小视为已存在;与曲库或本次会话已知文件大小相同且内容一致视为重复;
-/// 同名但大小不同视为新版本,覆盖旧文件。
+/// 同名但大小不同视为新版本,覆盖旧文件。转码件以「目标 flac 已存在且源未更新」判重。
 fn copy_into_import_dir(
     src: &Path,
     import_dir: &Path,
     known: &[(String, u64)],
     known_shas: &std::collections::HashSet<String>,
     session_shas: &mut Vec<(PathBuf, String)>,
+    ffmpeg: Option<&Path>,
 ) -> Result<CopyResult, String> {
-    let supported = src
+    let ext = src
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| {
-            let e = e.to_ascii_lowercase();
-            scanner::EXTENSIONS.contains(&e.as_str()) || e == "lrc"
-        })
-        .unwrap_or(false);
-    if !supported {
+        .map(|e| e.to_ascii_lowercase());
+    let Some(ext) = ext else {
         return Ok(CopyResult::Skipped);
+    };
+    let is_lyrics = ext == "lrc";
+    let is_direct = scanner::EXTENSIONS.contains(&ext.as_str());
+    let is_transcode = scanner::TRANSCODE_EXTS.contains(&ext.as_str());
+    if !is_lyrics && !is_direct && !is_transcode {
+        return Ok(CopyResult::Skipped);
+    }
+    // 非常规格式:有 ffmpeg 才转 FLAC(封面走 attached_pic,容器不支持时自动退回纯音频);
+    // 没有 ffmpeg 就静默跳过——报告的 skipped 由此变大,由前端提示安装 ffmpeg
+    if is_transcode {
+        let Some(ff) = ffmpeg else {
+            return Ok(CopyResult::Skipped);
+        };
+        let Some(stem) = src.file_stem() else {
+            return Ok(CopyResult::Skipped);
+        };
+        let dest = import_dir.join(format!("{}.flac", stem.to_string_lossy()));
+        if dest.exists() {
+            // 已转过:源文件比转码件新(改过标签/换过版本)才重转
+            let stale = match (fs::metadata(src), fs::metadata(&dest)) {
+                (Ok(a), Ok(b)) => a
+                    .modified()
+                    .ok()
+                    .zip(b.modified().ok())
+                    .map(|(s, d)| s > d)
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !stale {
+                return Ok(CopyResult::Skipped);
+            }
+        }
+        transcode_to_flac(ff, src, &dest)
+            .map_err(|e| format!("转码 {} 失败: {e}", src.display()))?;
+        return Ok(CopyResult::Transcoded);
     }
     let Some(name) = src.file_name() else {
         return Ok(CopyResult::Skipped);
@@ -370,6 +419,66 @@ fn copy_into_import_dir(
     fs::copy(src, &dest)
         .map(|_| CopyResult::Copied)
         .map_err(|e| format!("复制 {} 失败: {e}", src.display()))
+}
+
+#[cfg(windows)]
+const FFMPEG_BIN: &str = "ffmpeg.exe";
+#[cfg(not(windows))]
+const FFMPEG_BIN: &str = "ffmpeg";
+
+/// 定位 ffmpeg:①打包资源(release 安装)②系统 PATH(开发机常见)。都没有则不转码。
+/// 资源文件要求 >10MB:开发机构建需要一个占位文件让 tauri-build 的资源校验通过,
+/// 真正的 ffmpeg.exe 远大于占位文本,体积即真伪判据
+fn find_ffmpeg(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Ok(dir) = app.path().resource_dir() {
+        let p = dir.join(FFMPEG_BIN);
+        let big_enough = p.metadata().map(|m| m.len() > 10_000_000).unwrap_or(false);
+        if p.is_file() && big_enough {
+            return Some(p);
+        }
+    }
+    if let Ok(out) = std::process::Command::new(FFMPEG_BIN)
+        .arg("-version")
+        .output()
+    {
+        if out.status.success() {
+            return Some(PathBuf::from(FFMPEG_BIN));
+        }
+    }
+    None
+}
+
+/// 转码为无损 FLAC:映射全部元数据与内嵌封面(attached_pic);
+/// 部分容器/封装的图流写不进 FLAC 时,退回纯音频重试。
+/// stderr 只取最后一行作错误上下文(ffmpeg 的正常输出全在 stderr 上)
+fn transcode_to_flac(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
+    let attempt = |with_cover: bool| -> Result<(), String> {
+        let mut cmd = std::process::Command::new(ffmpeg);
+        cmd.arg("-y")
+            .arg("-nostdin")
+            .args(["-i"])
+            .arg(src)
+            .args(["-map", "0:a"]);
+        if with_cover {
+            cmd.args(["-map", "0:v?"])
+                .args(["-c:v", "copy"])
+                .args(["-disposition:v", "attached_pic"]);
+        }
+        cmd.args(["-c:a", "flac"])
+            .arg(dest)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let out = cmd.output().map_err(|e| format!("启动 ffmpeg 失败: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .last()
+            .unwrap_or("ffmpeg 转码失败")
+            .to_string())
+    };
+    attempt(true).or_else(|_| attempt(false))
 }
 
 // ===== TMC 音乐包(.tmc = 标准 7z:音频 + 同名 .lrc 歌词 + cover 封面 + meta.json) =====
@@ -831,8 +940,9 @@ fn handle_open_paths(app: &tauri::AppHandle, args: &[String]) {
                 failures.push(format!("{name}: 不支持的格式"));
             }
             if !loose.is_empty() {
-                match import_loose(&loose, &import_dir, &state) {
-                    Ok((_, _, _, _, shas)) => all_session_shas.extend(shas),
+                let ffmpeg = find_ffmpeg(&app);
+                match import_loose(&loose, &import_dir, &state, ffmpeg.as_deref()) {
+                    Ok((_, _, _, _, _, shas)) => all_session_shas.extend(shas),
                     Err(e) => failures.push(format!("导入失败: {e}")),
                 }
             }
@@ -4136,6 +4246,29 @@ mod tests {
     }
 
     #[test]
+    fn import_skips_transcodables_without_ffmpeg() {
+        // 无 ffmpeg:非常规格式静默跳过,不产生任何文件;歌词与直放格式不受影响
+        use super::{copy_into_import_dir, CopyResult};
+        let dir = std::env::temp_dir().join(format!("tm-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let imp = dir.join("imp");
+        fs::create_dir_all(&imp).unwrap();
+        let ape = dir.join("凉宫春日.ape");
+        fs::write(&ape, b"ape-bytes").unwrap();
+        let got =
+            copy_into_import_dir(&ape, &imp, &[], &Default::default(), &mut Vec::new(), None);
+        assert!(matches!(got, Ok(CopyResult::Skipped)));
+        assert!(!imp.join("凉宫春日.flac").exists());
+        let lrc = dir.join("凉宫春日.lrc");
+        fs::write(&lrc, "[00:01]test").unwrap();
+        let got =
+            copy_into_import_dir(&lrc, &imp, &[], &Default::default(), &mut Vec::new(), None);
+        assert!(matches!(got, Ok(CopyResult::Copied)));
+        assert!(imp.join("凉宫春日.lrc").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn strip_bracketed_removes_parenthetical_for_search() {
         use super::{kuwo_keywords, strip_bracketed};
         assert_eq!(
@@ -4336,7 +4469,7 @@ mod tests {
         let dup = dir.join("song (1).mp3");
         fs::write(&dup, b"same-audio-content").unwrap();
         assert!(matches!(
-            copy_into_import_dir(&dup, &imp, &known, &no_shas, &mut session),
+            copy_into_import_dir(&dup, &imp, &known, &no_shas, &mut session, None),
             Ok(CopyResult::Duplicate)
         ));
 
@@ -4344,7 +4477,7 @@ mod tests {
         let fresh = dir.join("other.mp3");
         fs::write(&fresh, b"different-content").unwrap();
         assert!(matches!(
-            copy_into_import_dir(&fresh, &imp, &known, &no_shas, &mut session),
+            copy_into_import_dir(&fresh, &imp, &known, &no_shas, &mut session, None),
             Ok(CopyResult::Copied)
         ));
         // 复制成功的同时记录了指纹,供会话内后续去重
@@ -4354,7 +4487,7 @@ mod tests {
         let origin_copy = dir.join("origin_copy");
         fs::copy(&origin, &origin_copy).unwrap();
         assert!(matches!(
-            copy_into_import_dir(&origin_copy, &imp, &known, &no_shas, &mut session),
+            copy_into_import_dir(&origin_copy, &imp, &known, &no_shas, &mut session, None),
             Ok(CopyResult::Skipped)
         ));
         fs::remove_dir_all(&dir).ok();
@@ -4375,7 +4508,7 @@ mod tests {
         let mut session: Vec<(std::path::PathBuf, String)> = Vec::new();
 
         assert!(matches!(
-            copy_into_import_dir(&incoming, &imp, &[], &known_shas, &mut session),
+            copy_into_import_dir(&incoming, &imp, &[], &known_shas, &mut session, None),
             Ok(CopyResult::Duplicate)
         ));
         assert!(!imp.join("new_name.mp3").exists(), "重复内容不落盘");

@@ -11,6 +11,11 @@ use crate::model::{ScanReport, Track};
 use crate::{sanitize_name, AppState, IMPORT_DIR_NAME, LIBRARY_FILE};
 
 pub const EXTENSIONS: &[&str] = &["mp3", "m4a", "flac", "ogg", "oga", "opus", "wav"];
+/// 需经 ffmpeg 转 FLAC 才能播放的扩展名:浏览器内核(WebView2)没有这些解码器,
+/// 导入时转成无损 FLAC(原文件不动);清单随 ffmpeg 能力增补
+pub const TRANSCODE_EXTS: &[&str] = &[
+    "ape", "wma", "wv", "tta", "tak", "dsf", "dff", "ac3", "mka", "aif", "aiff", "mpc",
+];
 /// 封面图片扩展名(目录封面回退与内嵌封面落盘共用)
 pub const COVER_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
