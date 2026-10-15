@@ -41,7 +41,14 @@ function loadSavedMode(): PlayMode {
 
 /** 切换播放模式并持久化(重启后保持) */
 export function setMode(m: PlayMode): void {
+  const wasShuffle = player.mode === "shuffle";
   player.mode = m;
+  // 每次切入随机都重新洗牌:上轮随机已放过的歌不再被旧洗牌袋记着,
+  // 新一轮随机从全队列重新洗起;播放历史一并作废(prev 语义随新轮次走)
+  if (m === "shuffle" && !wasShuffle) {
+    bag = [];
+    playHistory = [];
+  }
   storageSet(StorageKeys.mode, m);
 }
 

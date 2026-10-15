@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from "vue";
-import { MODE_LABEL, player, type PlayMode } from "../stores/player";
+import { MODE_LABEL, player, setMode, type PlayMode } from "../stores/player";
 
 // 气泡弹出方向由使用处决定:顶栏贴着窗口上沿,向上弹会被窗体裁掉看不见,
 // 只有向下弹才可见;播放页控制行在窗口底部,默认向上弹
@@ -15,7 +15,8 @@ let hintTimer = 0;
 function cycle(): void {
   const order: PlayMode[] = ["seq", "loop", "one", "shuffle"];
   const i = order.indexOf(player.mode);
-  player.mode = order[(i + 1) % order.length];
+  // 经 setMode 切换:切入随机时触发重新洗牌(见 player.ts)
+  setMode(order[(i + 1) % order.length]);
   // 模式键只切换播放模式,不改动队列:随机范围 = 点「随机播放」时所在的列表
   // (歌曲页=全库 / 专辑页=该专辑 / 歌单页=该歌单),上下文语义归属用户
   hint.value = MODE_LABEL[player.mode];
