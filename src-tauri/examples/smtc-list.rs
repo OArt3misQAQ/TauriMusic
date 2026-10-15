@@ -14,11 +14,17 @@ fn main() -> windows::core::Result<()> {
     for s in &sessions {
         let app_id = s.SourceAppUserModelId()?;
         let props = s.TryGetMediaPropertiesAsync()?.get()?;
+        let info = s.GetPlaybackInfo()?;
+        let status = info.PlaybackStatus()?;
+        let tl = s.GetTimelineProperties()?;
+        let pos = tl.Position()?.Duration as f64 / 1e7;
         println!(
-            "APP={} | TITLE={} | ARTIST={}",
+            "APP={} | TITLE={} | ARTIST={} | STATUS={:?} | POS={:.1}s",
             app_id,
             props.Title()?,
-            props.Artist()?
+            props.Artist()?,
+            status,
+            pos
         );
     }
     Ok(())

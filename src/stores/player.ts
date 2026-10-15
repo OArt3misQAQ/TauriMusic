@@ -61,6 +61,19 @@ let bag: number[] = [];
 /** 袋子对应的队列引用:队列被替换(playTracks/删除清理)时自动重建 */
 let bagQueue: Track[] | null = null;
 
+// 开发期 HMR 热替换会丢弃旧模块实例,但旧的 <audio> 元素仍留在内存里继续出声,
+// 其 ended→replay 自循环监听也一并存活——不清理的话会积累出
+// 「UI 已暂停、喇叭还在放同一首」的孤儿音频。dispose 时统一停掉并断开
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+  });
+}
+
 function pushHistory(idx: number): void {
   if (idx < 0) return;
   playHistory.push(idx);
