@@ -151,7 +151,12 @@ const statusText = computed(() =>
         <span>回收站</span>
         <span v-if="lib.trash.length" class="badge">{{ lib.trash.length }}</span>
       </button>
-      <button class="action" title="设置" @click="ui.settingsOpen = true">
+      <button
+        class="action"
+        :class="{ active: ui.view === 'settings' }"
+        title="设置"
+        @click="go('settings')"
+      >
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
           <path d="M5 7.5h7M16.5 7.5H19M5 12h3M11.5 12H19M5 16.5h7M16.5 16.5H19" />
           <circle cx="14" cy="7.5" r="2" />

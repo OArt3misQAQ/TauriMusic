@@ -51,7 +51,7 @@ function onKey(e: KeyboardEvent): void {
 
   if (e.key === "Escape") {
     // 弹窗/右键菜单有自己的关闭逻辑,不重复处理
-    if (ui.welcomeOpen || ui.settingsOpen || ui.aboutOpen || ctx.items) return;
+    if (ui.welcomeOpen || ui.aboutOpen || ctx.items) return;
     if (ui.nowPlayingOpen) {
       e.preventDefault();
       ui.nowPlayingOpen = false;

@@ -5,7 +5,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import Sidebar from "./components/Sidebar.vue";
 import TopBar from "./components/TopBar.vue";
 import NowPlaying from "./components/NowPlaying.vue";
-import SettingsModal from "./components/SettingsModal.vue";
 import AboutModal from "./components/AboutModal.vue";
 import WelcomeModal from "./components/WelcomeModal.vue";
 import TrayPopup from "./components/TrayPopup.vue";
@@ -23,6 +22,7 @@ import ArtistsView from "./views/ArtistsView.vue";
 import SongsView from "./views/SongsView.vue";
 import SearchView from "./views/SearchView.vue";
 import StatsView from "./views/StatsView.vue";
+import SettingsView from "./views/SettingsView.vue";
 import TrashView from "./views/TrashView.vue";
 import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
 import { exportState, importPreview, initLibrary, initDragImport } from "./stores/library";
@@ -42,6 +42,7 @@ const views = {
   playlists: PlaylistsView,
   playlist: PlaylistDetailView,
   stats: StatsView,
+  settings: SettingsView,
   trash: TrashView,
 } as const;
 
@@ -147,9 +148,6 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
       <NowPlaying v-if="ui.nowPlayingOpen && current" />
     </Transition>
 
-    <Transition name="modal">
-      <SettingsModal v-if="ui.settingsOpen" />
-    </Transition>
     <Transition name="modal">
       <AboutModal v-if="ui.aboutOpen" />
     </Transition>

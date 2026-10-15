@@ -11,6 +11,7 @@ export type ViewName =
   | "playlists"
   | "playlist"
   | "stats"
+  | "settings"
   | "trash";
 /** 皮肤模式:跟随系统 / 浅色 / 黑色 */
 export type ThemeMode = "system" | "light" | "dark";
@@ -38,7 +39,6 @@ interface UiState {
   /** 首次启动使用声明 */
   welcomeOpen: boolean;
   /** 设置弹窗 */
-  settingsOpen: boolean;
   /** 关于弹窗 */
   aboutOpen: boolean;
 }
@@ -54,7 +54,6 @@ export const ui = reactive<UiState>({
   skin: "glass",
   nowPlayingOpen: false,
   welcomeOpen: false,
-  settingsOpen: false,
   aboutOpen: false,
 });
 
