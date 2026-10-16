@@ -41,10 +41,15 @@ const SCAN_VERSION: u32 = 3;
 /// 通过 AppState 的扫描闸防重入:已有扫描进行中时直接返回错误。
 pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
     let state = app.state::<AppState>();
-    let _gate = state
-        .scan_gate
-        .try_lock()
-        .map_err(|_| "已有扫描正在进行,请稍后再试".to_string())?;
+    let _gate = match state.scan_gate.try_lock() {
+        Ok(g) => g,
+        // 上次扫描线程 panic 后锁中毒:恢复互斥数据继续,
+        // 把"毒化"误报成"占用"会让之后的扫描永久失败
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err("已有扫描正在进行,请稍后再试".to_string())
+        }
+    };
     // 旧曲库只在这里克隆成 path 索引:扫描全程不再持有第二份全量记录
     let (folders, mut by_path, prev_version) = {
         let lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
@@ -84,10 +89,13 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
             }
         }
     }
-    let total = files.len();
-
     // 曲库整理:导入目录顶层的散装音频按「艺人\专辑」归位(仅顶层,不动子目录结构)
     organize_top_level(&state.data_dir.join(IMPORT_DIR_NAME), &mut files);
+    // 嵌套登记/大小写变体会让同一文件被收进两次,曲库出现重复 id;
+    // Windows 路径不区分大小写,按小写归一去重
+    dedup_file_list(&mut files);
+    // 进度分母取整理与去重之后的最终清单:否则重复副本被清理后进度永远到不了满格
+    let total = files.len();
 
     let covers_dir = state.cache_dir.join("covers");
     let _ = fs::create_dir_all(&covers_dir);
@@ -120,6 +128,12 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
             .map(|_| {
                 scope.spawn(move || {
                     let mut out: Vec<Track> = Vec::new();
+                    // 快速复用与 metadata 失败的文件同样要上报进度:
+                    // 纯增量扫描里大多数文件走快速路径,只在解析后上报的话进度条全程不动
+                    let emit_progress = || {
+                        let n = done.load(std::sync::atomic::Ordering::Relaxed);
+                        let _ = app.emit("scan-progress", json!({ "current": n, "total": total }));
+                    };
                     loop {
                         let i = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(chunk) = chunks.get(i) else {
@@ -127,6 +141,7 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                         };
                         for path in *chunk {
                             let path_str = path.to_string_lossy().to_string();
+                            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                             let (mtime, size) = match fs::metadata(path) {
                                 Ok(m) => (
@@ -137,12 +152,22 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                                         .unwrap_or(0.0),
                                     m.len(),
                                 ),
-                                Err(_) => {
-                                    // 文件在遍历与 stat 之间消失:落入 removed 口径
+                                Err(e) => {
+                                    // NotFound = 文件真的没了,落入 removed 口径;
+                                    // 其余(杀软独占/网络盘抖动)是瞬时失败,保留旧记录,
+                                    // 不能把还能读到的曲目误清出曲库
+                                    if e.kind() != std::io::ErrorKind::NotFound {
+                                        eprintln!(
+                                            "[scan] 读取文件信息失败 {path_str}: {e},保留旧记录"
+                                        );
+                                        if let Some(prev) = by_path.get(&path_str) {
+                                            out.push(prev.clone());
+                                        }
+                                    }
+                                    emit_progress();
                                     continue;
                                 }
                             };
-                            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                             let cached = by_path.get(&path_str).cloned();
                             if let Some(prev) = &cached {
@@ -164,6 +189,10 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                                     .as_ref()
                                     .map(|c| Path::new(c).is_file())
                                     .unwrap_or(true);
+                                // prev.cover 指向的是缓存缩略图,与曲目元数据无关:
+                                // 缩略图 mtime(上次扫描时刻)天然晚于音频 mtime,
+                                // 计入旁路判定会让带封面的曲目每轮都全量重解析,
+                                // 增量扫描整体失效;缓存丢失已由上面的 cover_ok 覆盖
                                 if (prev.mtime - mtime).abs() < 0.5
                                     && prev.size == size
                                     && cover_ok
@@ -171,11 +200,12 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                                     && {
                                         let mut listings =
                                             dir_listings.lock().unwrap_or_else(|e| e.into_inner());
-                                        sidecar_mtime(path, prev.cover.as_deref(), &mut listings)
+                                        sidecar_mtime(path, &mut listings)
                                     } <= prev.mtime + 0.5
                                     && !force_full
                                 {
                                     out.push(prev.clone());
+                                    emit_progress();
                                     continue;
                                 }
                             }
@@ -189,8 +219,14 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                                 &mut album_covers.lock().unwrap_or_else(|e| e.into_inner()),
                             ) {
                                 Ok(mut track) => {
-                                    if let Some(prev) = cached {
+                                    if let Some(prev) = &cached {
                                         track.added_at = prev.added_at;
+                                        // 内容未变(mtime/size 都没动)的重解析——旁路文件
+                                        // 更新或强制全扫触发:保留旧 SHA 指纹,
+                                        // 否则跨包内容去重在下一轮扫描后失效
+                                        if (prev.mtime - mtime).abs() < 0.5 && prev.size == size {
+                                            track.sha256 = prev.sha256.clone();
+                                        }
                                     }
                                     out.push(track);
                                 }
@@ -201,12 +237,7 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                                     }
                                 }
                             }
-
-                            let n = done.load(std::sync::atomic::Ordering::Relaxed);
-                            // 逐文件上报进度:旧的"每 20 个发一次"在 42 首的曲库里
-                            // 只会发出 20/42、40/42 两帧,用户看到的就是"卡在 20"
-                            let _ =
-                                app.emit("scan-progress", json!({ "current": n, "total": total }));
+                            emit_progress();
                         }
                     }
                     out
@@ -215,7 +246,12 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_default())
+            .map(|h| match h.join() {
+                Ok(v) => v,
+                // worker panic 不能静默吞掉:unwrap_or_default 会把这批曲目按
+                // removed 口径静默清出曲库——续传 panic 让故障当场暴露
+                Err(e) => std::panic::resume_unwind(e),
+            })
             .collect()
     });
 
@@ -533,6 +569,20 @@ fn write_cover_thumbs(covers_dir: &Path, album_key: &str, data: &[u8]) -> Option
 /// 目录旁路文件清单:一次 read_dir 拿全部(小写文件名, mtime)
 type DirListing = Vec<(String, f64)>;
 
+/// 文件清单去重:嵌套/大小写变体的重复登记会让 walkdir 产出同一路径两次。
+/// Windows 路径不区分大小写,按小写归一比较;其他平台精确比较
+fn dedup_file_list(files: &mut Vec<PathBuf>) {
+    let mut seen: HashSet<String> = HashSet::with_capacity(files.len());
+    files.retain(|f| {
+        let key = if cfg!(windows) {
+            f.to_string_lossy().to_lowercase()
+        } else {
+            f.to_string_lossy().to_string()
+        };
+        seen.insert(key)
+    });
+}
+
 /// 读取目录清单并缓存:一个目录只枚举一次,同专辑多曲目共享,
 /// 替代旧实现对每个未变化文件做 20+ 次 metadata 探测
 fn dir_listing(dir: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> DirListing {
@@ -563,13 +613,10 @@ fn dir_listing(dir: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> DirListi
     out
 }
 
-/// 音频旁路元数据文件的最新修改时间(目录封面 + {stem}.cover.* + 同名 .lrc + 旧封面文件),
-/// 无则 0。语义与逐个 stat 的旧实现一致(含原地覆写检测),但目录清单按缓存只枚举一次
-fn sidecar_mtime(
-    path: &Path,
-    prev_cover: Option<&str>,
-    cache: &mut HashMap<PathBuf, DirListing>,
-) -> f64 {
+/// 音频旁路元数据文件的最新修改时间(目录封面 + {stem}.cover.* + 同名 .lrc),
+/// 无则 0。语义与逐个 stat 的旧实现一致(含原地覆写检测),但目录清单按缓存只枚举一次。
+/// 旧记录的 cover 不参与:它指向缓存缩略图,写缩略图的时刻与曲目元数据无关
+fn sidecar_mtime(path: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> f64 {
     let Some(parent) = path.parent() else {
         return 0.0;
     };
@@ -590,15 +637,6 @@ fn sidecar_mtime(
         let is_lrc = name == &format!("{stem}.lrc");
         if (is_dir_cover || is_stem_cover || is_lrc) && *mtime > max {
             max = *mtime;
-        }
-    }
-    if let Some(c) = prev_cover {
-        if let Ok(m) = fs::metadata(c) {
-            if let Ok(t) = m.modified() {
-                if let Ok(d) = t.duration_since(UNIX_EPOCH) {
-                    max = max.max(d.as_secs_f64());
-                }
-            }
         }
     }
     max
@@ -740,31 +778,53 @@ mod tests {
         let audio = dir.join("song.mp3");
         fs::write(&audio, b"x").unwrap();
         let mut cache: HashMap<PathBuf, DirListing> = HashMap::new();
-        assert_eq!(sidecar_mtime(&audio, None, &mut cache), 0.0);
+        assert_eq!(sidecar_mtime(&audio, &mut cache), 0.0);
         // 每次写入后清缓存 = 模拟一次新扫描(清单是单次扫描内的快照,与生产语义一致)
         fs::write(dir.join("cover.jpg"), b"x").unwrap();
         cache.clear();
-        assert!(sidecar_mtime(&audio, None, &mut cache) > 0.0);
+        assert!(sidecar_mtime(&audio, &mut cache) > 0.0);
         fs::write(dir.join("song.lrc"), b"[00:00]t").unwrap();
         fs::write(dir.join("song.cover.png"), b"x").unwrap();
         cache.clear();
-        assert!(sidecar_mtime(&audio, None, &mut cache) > 0.0);
+        assert!(sidecar_mtime(&audio, &mut cache) > 0.0);
         // 非默认名单的封面(folder.*)也应计入,与目录封面回退逻辑一致
         fs::write(dir.join("folder.jpg"), b"x").unwrap();
         cache.clear();
-        assert!(sidecar_mtime(&audio, None, &mut cache) > 0.0);
-        // 旧记录指向的实际封面路径(如缓存目录)同样计入
-        let elsewhere = temp_dir("sidecar-elsewhere");
-        fs::create_dir_all(&elsewhere).unwrap();
-        fs::write(elsewhere.join("cached.png"), b"x").unwrap();
-        let cached = elsewhere.join("cached.png");
-        assert!(sidecar_mtime(&audio, Some(cached.to_str().unwrap()), &mut cache) > 0.0);
+        assert!(sidecar_mtime(&audio, &mut cache) > 0.0);
         // 命中规则的边界:同前缀但非候选名(cover.backup.jpg)不算旁路文件
         fs::write(dir.join("cover.backup.jpg"), b"x").unwrap();
         cache.clear();
-        assert!(sidecar_mtime(&audio, None, &mut cache) > 0.0); // folder.jpg 仍在
+        assert!(sidecar_mtime(&audio, &mut cache) > 0.0); // folder.jpg 仍在
         fs::remove_dir_all(&dir).ok();
-        fs::remove_dir_all(&elsewhere).ok();
+    }
+
+    #[test]
+    fn sidecar_mtime_ignores_cached_cover_mtime() {
+        // 回归:旧记录的 cover 指向缓存缩略图,缩略图 mtime(上次扫描时刻)天然
+        // 晚于音频 mtime——若计入旁路判定,带封面的曲目每轮扫描都会被判"有变更"
+        // 而全量重解析,增量扫描整体失效。缓存缩略图不属于音频目录,天然不在清单里
+        let dir = temp_dir("sidecar-cache");
+        let audio = dir.join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        let mut cache: HashMap<PathBuf, DirListing> = HashMap::new();
+        assert_eq!(sidecar_mtime(&audio, &mut cache), 0.0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dedup_file_list_merges_case_variants() {
+        // 嵌套登记/大小写变体会让同一文件进清单两次;Windows 大小写不敏感需归一去重
+        let mut files = vec![
+            PathBuf::from("C:\\music\\a.mp3"),
+            PathBuf::from("C:\\music\\A.MP3"),
+            PathBuf::from("C:\\music\\b.mp3"),
+        ];
+        dedup_file_list(&mut files);
+        if cfg!(windows) {
+            assert_eq!(files.len(), 2, "大小写变体应合并: {files:?}");
+        } else {
+            assert_eq!(files.len(), 3, "大小写敏感平台不应合并: {files:?}");
+        }
     }
 
     #[test]
