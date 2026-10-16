@@ -112,6 +112,7 @@ impl Library {
     /// 原子保存:先写临时文件,把现有文件备份为 .bak,再 rename 落盘。
     /// 任何一步失败都不会破坏已有数据。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -119,21 +120,28 @@ impl Library {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         let tmp = tmp_path(path);
-        fs::write(&tmp, &json)?;
+        {
+            // 数据先 sync 再谈 rename:掉电时 rename 可能先于内容写入持久层,
+            // 最坏情况是"最新一次保存丢失"(有 .bak 兜底),不能更糟
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(&json)?;
+            f.sync_all()?;
+        }
 
-        // 旧文件先转存为 .bak(首次保存没有旧文件,跳过)
+        // 旧文件先转存为 .bak(首次保存没有旧文件,跳过)。
+        // 备份失败必须中止:否则主文件一旦损坏将无备份可回退
         if path.exists() {
             let bak = backup_path(path);
-            let _ = fs::rename(path, &bak);
+            fs::rename(path, &bak)?;
         }
-        // rename 同卷内原子替换;失败时把 tmp 留着也比丢数据强
+        // rename 同卷内原子替换;失败时退回直接覆盖,内容是完整 JSON 即视为保存成功
+        // (若此时仍返回 Err,调用方会回滚内存,而磁盘已是新数据——内存/磁盘反而分叉)
         match fs::rename(&tmp, path) {
             Ok(()) => Ok(()),
-            Err(e) => {
-                // rename 失败则退回直接覆盖(极少数平台),至少内容是完整 JSON
+            Err(_) => {
                 fs::write(path, &json)?;
                 let _ = fs::remove_file(&tmp);
-                Err(e)
+                Ok(())
             }
         }
     }

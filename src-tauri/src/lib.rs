@@ -235,6 +235,9 @@ fn import_paths_blocking(paths: &[String], app: &tauri::AppHandle) -> Result<Imp
     if report.folders_added > 0 {
         refresh_asset_scope(app);
     }
+    // 曲库已被本命令改写:与其他导入路径对齐,广播事件让监听方刷新
+    // (handle_open_paths/import_tmc 等都发,唯独这里漏了)
+    let _ = app.emit("library-changed", ());
     Ok(report)
 }
 
@@ -276,7 +279,12 @@ fn place_archive(tmp: &Path, dest: &Path) -> Result<(), String> {
     if fs::rename(tmp, dest).is_ok() {
         return Ok(());
     }
-    fs::copy(tmp, dest).map_err(|e| format!("落位到 {} 失败: {e}", dest.display()))?;
+    // 跨盘拷贝中途失败(磁盘满/拔盘):必须清掉目标处的半成品,
+    // 否则下次落位同名文件会被 dedup_dest 改名成 "xxx (2)"
+    if let Err(e) = fs::copy(tmp, dest) {
+        let _ = fs::remove_file(dest);
+        return Err(format!("落位到 {} 失败: {e}", dest.display()));
+    }
     let _ = fs::remove_file(tmp);
     Ok(())
 }
@@ -762,15 +770,28 @@ fn inspect_manifest(staging: &Path, manifest: &str, kind: &str) -> Result<Packag
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        let dir = item.get("dir").and_then(|x| x.as_str()).unwrap_or("");
-        let audio = item.get("audio").and_then(|x| x.as_str()).unwrap_or("");
-        let abs = staging.join(dir).join(audio);
+        // dir 缺省/为空 = 包根;提供时必须过 zip-slip 校验——预览是恶意包
+        // 最先触达的入口,`../` 可借 read_preview_tags 读到暂存目录外的文件
+        let dir_raw = item.get("dir").and_then(|x| x.as_str()).unwrap_or("");
+        let dir = if dir_raw.is_empty() {
+            String::new()
+        } else {
+            match safe_manifest_part(dir_raw) {
+                Some(d) => d,
+                None => continue,
+            }
+        };
+        let audio_raw = item.get("audio").and_then(|x| x.as_str()).unwrap_or("");
+        let Some(audio) = safe_manifest_part(audio_raw) else {
+            continue;
+        };
+        let abs = staging.join(&dir).join(&audio);
         let (tag_title, tag_artist, tag_album, duration) = if abs.is_file() {
             read_preview_tags(&abs)
         } else {
             (None, None, None, None)
         };
-        let track_dir = staging.join(dir);
+        let track_dir = staging.join(&dir);
         let cover = find_cover_in(&track_dir, staging).or_else(|| root_cover.clone());
         tracks.push(PreviewTrack {
             title: jstr("title")
@@ -1467,10 +1488,14 @@ fn dedupe_album_cover_assets(assets: &mut ExportAssets) -> Option<String> {
         .iter()
         .enumerate()
         .filter(|(_, (name, _))| {
-            Path::new(name)
+            // 封面条目必须以 ".cover." + 图片扩展结尾:标题本身含 ".cover." 的
+            // 音频条目(如 "Track.cover Remix.mp3")不能被误当成封面移出资源表
+            let n = Path::new(name)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.contains(".cover."))
+                .unwrap_or("");
+            n.rsplit_once(".cover.")
+                .map(|(_, ext)| matches!(ext, "jpg" | "jpeg" | "png" | "webp"))
                 .unwrap_or(false)
         })
         .map(|(i, _)| i)
@@ -2262,11 +2287,14 @@ pub fn lrclib_lyric(
         );
     }
     for query in &queries {
-        let resp = client
+        // 单个搜索变体请求失败只影响该变体,不能放弃其余变体
+        let Ok(resp) = client
             .get("https://lrclib.net/api/search")
             .query(query)
             .send()
-            .ok()?;
+        else {
+            continue;
+        };
         if !resp.status().is_success() {
             continue;
         }
@@ -2289,7 +2317,10 @@ pub fn itunes_album_cover(album: &str, album_artist: &str) -> Option<String> {
     let client = generic_client();
     let norm_album = normalize_tag(album);
     for country in ["cn", "us"] {
-        let resp = client
+        // 单区失败(网络抖动/无搜索结果)只能跳过该区,不能从函数提前返回——
+        // 否则"先中国区再美区"的兜底永远跑不到美区,而"中国区搜不到"恰恰
+        // 是最该去美区再试的场景(冷门外语专辑)
+        let Ok(resp) = client
             .get("https://itunes.apple.com/search")
             .query(&[
                 ("term", format!("{album_artist} {album}")),
@@ -2299,7 +2330,9 @@ pub fn itunes_album_cover(album: &str, album_artist: &str) -> Option<String> {
                 ("country", country.to_string()),
             ])
             .send()
-            .ok()?;
+        else {
+            continue;
+        };
         if !resp.status().is_success() {
             continue;
         }
@@ -2332,10 +2365,12 @@ pub fn itunes_album_cover(album: &str, album_artist: &str) -> Option<String> {
                         .map(|n| artist_matches(album_artist, n))
                         .unwrap_or(false)
                 })
-            })?["artworkUrl100"]
-            .as_str()
-            .map(|s| s.replace("100x100bb", "1200x1200bb"))?;
-        return Some(pic);
+            })
+            .and_then(|r| r["artworkUrl100"].as_str())
+            .map(|s| s.replace("100x100bb", "1200x1200bb"));
+        if let Some(pic) = pic {
+            return Some(pic);
+        }
     }
     None
 }
@@ -2478,7 +2513,9 @@ fn kuwo_search(
 fn kuwo_song_detail(client: &reqwest::blocking::Client, rid: &str) -> Option<serde_json::Value> {
     let mut last: Option<serde_json::Value> = None;
     for _ in 0..3 {
-        let resp = client
+        // m 站三类抖动(请求失败/偶发 502/响应不是 JSON)都按"本次作废,继续重试"处理,
+        // 直接 return None 会让整个酷我链路被一次网络抖动降级掉
+        let Ok(resp) = client
             .get("https://m.kuwo.cn/newh5/singles/songinfoandlrc")
             .query(&[("musicId", rid)])
             .header(
@@ -2486,11 +2523,16 @@ fn kuwo_song_detail(client: &reqwest::blocking::Client, rid: &str) -> Option<ser
                 "https://m.kuwo.cn/newh5/singles/songinfoandlrc",
             )
             .send()
-            .ok()?;
+        else {
+            continue;
+        };
         if !resp.status().is_success() {
-            return None;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            continue;
         }
-        let v: serde_json::Value = resp.json().ok()?;
+        let Ok(v) = resp.json::<serde_json::Value>() else {
+            continue;
+        };
         let data = v.get("data").cloned().unwrap_or_default();
         if data.get("songinfo").is_some() {
             return Some(data);
@@ -2611,10 +2653,15 @@ pub fn kuwo_album_cover(
                 })
                 .unwrap_or(matched[0])
         } else {
-            duration.and_then(|d| {
+            // 艺人全对不上:只有时长 ±2s 吻合才敢要。本组关键词无吻合时
+            // continue 试下一组,直接 ? 返回会让剩余关键词变体全部失效
+            match duration.and_then(|d| {
                 list.iter()
                     .find(|s| parse_dur(s).map(|k| (d - k).abs() <= 2.0).unwrap_or(false))
-            })?
+            }) {
+                Some(p) => p,
+                None => continue,
+            }
         };
         let Some(rid) = pick["MUSICRID"].as_str() else {
             continue;
@@ -2678,8 +2725,11 @@ fn delete_tracks_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<Dele
         let (del, kept): (Vec<model::Track>, Vec<model::Track>) =
             lib.tracks.drain(..).partition(|t| id_set.contains(&t.id));
         lib.tracks = kept;
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
+            // 落盘失败必须回滚内存:否则界面少了歌而磁盘没少,重启后又"复活"
+            lib.tracks.extend(del);
+            return Err(e.to_string());
+        }
         del
     };
 
@@ -2695,16 +2745,16 @@ fn delete_tracks_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<Dele
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or_else(|| "mp3".into());
         let base = format!("{}_{}", t.id, sanitize_name(&t.title));
-        match move_into_trash(audio, &trash_dir, &format!("{base}.{ext}")).and_then(|ta| {
+        match move_into_trash(audio, &trash_dir, &format!("{base}.{ext}")).map(|ta| {
+            // 歌词搬运失败降级为"无歌词的回收站条目":音频已经进了回收站,
+            // 若整体判失败回填曲库,音频会变成无条目的孤儿——永远不被清理也还原不了
             let tl = match &t.lrc_path {
-                Some(l) if Path::new(l).is_file() => Some(move_into_trash(
-                    Path::new(l),
-                    &trash_dir,
-                    &format!("{base}.lrc"),
-                )?),
+                Some(l) if Path::new(l).is_file() => {
+                    move_into_trash(Path::new(l), &trash_dir, &format!("{base}.lrc")).ok()
+                }
                 _ => None,
             };
-            Ok((ta, tl))
+            (ta, tl)
         }) {
             Ok((trashed_audio, trashed_lrc)) => {
                 if let Some(parent) = audio.parent() {
@@ -2928,9 +2978,11 @@ fn purge_expired_trash(app: &tauri::AppHandle) {
     let cutoff = now_secs() - TRASH_RETENTION_DAYS * 86400.0;
     let expired: Vec<model::TrashEntry> = {
         let mut lib = state.lib.lock().unwrap_or_else(|e| e.into_inner());
-        let (exp, _keep): (Vec<model::TrashEntry>, Vec<model::TrashEntry>) =
+        let (exp, keep): (Vec<model::TrashEntry>, Vec<model::TrashEntry>) =
             lib.trash.drain(..).partition(|e| e.deleted_at < cutoff);
-        lib.trash = Vec::new();
+        // 未过期的条目必须放回去:曾在这里被整表丢弃,导致每次启动都把
+        // 回收站清空——未过期条目既不能还原也永远不会被清理(孤儿文件)
+        lib.trash = keep;
         exp
     };
     if expired.is_empty() {
@@ -3367,25 +3419,40 @@ fn verify_and_dedupe_pack(
     Ok((kept, skipped))
 }
 
-/// 把来源包记录的 SHA-256 补写进曲库记录(按路径匹配;路径可能因去重改名,做规范化比对)。
-/// 之后扫描遇到未变化的文件会原样保留该哈希,跨包去重持续有效
-/// 把 (文件路径, SHA) 补写进曲库记录(按路径匹配;路径可能因去重改名,做规范化比对)。
+/// 把 (文件路径, SHA) 补写进曲库记录(按路径匹配;路径可能因去重改名,做规范化比对,
+/// 归位到「艺人\专辑」子目录的散装文件按文件名兜底)。
 /// 之后扫描遇到未变化的文件会原样保留该哈希,跨包去重持续有效。
 /// 包导入(record_pack_shas)与散装导入共用
 fn record_track_shas(state: &AppState, pairs: &[(PathBuf, String)]) -> Result<(), String> {
     if pairs.is_empty() {
         return Ok(());
     }
+    let import_dir = state.data_dir.join(IMPORT_DIR_NAME);
+    let import_str = import_dir.to_string_lossy().to_string();
     let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
     for (path, sha) in pairs {
         let abs_str = path.to_string_lossy().replace('/', "\\");
         let abs_norm = norm_path(&abs_str);
-        if let Some(t) = lib
+        let sha = sha.to_ascii_lowercase();
+        // 先按记录时的原始路径精确/规范化匹配;散装导入的文件随后会被
+        // organize_top_level 归位到「艺人\专辑」子目录,指纹路径已失配——
+        // 退一步按文件名在导入目录下重新定位(取尚无指纹的那个)
+        let idx = lib
             .tracks
-            .iter_mut()
-            .find(|t| t.path == abs_str || norm_path(&t.path) == abs_norm)
-        {
-            t.sha256 = Some(sha.to_ascii_lowercase());
+            .iter()
+            .position(|t| t.path == abs_str || norm_path(&t.path) == abs_norm)
+            .or_else(|| {
+                let name = path.file_name()?.to_string_lossy().to_string();
+                lib.tracks.iter().position(|t| {
+                    t.sha256.is_none()
+                        && is_under(&t.path, &import_str)
+                        && Path::new(&t.path)
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy() == name)
+                })
+            });
+        if let Some(i) = idx {
+            lib.tracks[i].sha256 = Some(sha);
         }
     }
     lib.save(&state.data_dir.join(LIBRARY_FILE))
@@ -3658,6 +3725,12 @@ fn get_associations() -> Vec<AssocState> {
 
 #[tauri::command]
 fn set_association(ext: String, enable: bool) -> Result<(), String> {
+    // ext 来自前端 invoke:必须限定在支持名单内。get_associations 只读白名单,
+    // 这里若不设防,被攻破的前端可借本命令改写任意 HKCU 类注册表
+    // (如 .exe 的用户级默认 ProgID,或拼出带 \ 的子键路径)
+    if !ASSOC_EXTS.iter().any(|(e, _)| *e == ext) {
+        return Err(format!("不支持的扩展名: .{ext}"));
+    }
     let desc = assoc_desc(&ext);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
 
@@ -3883,15 +3956,25 @@ fn add_folder(path: String, app: tauri::AppHandle, state: State<AppState>) -> Re
         return Err("该路径不是一个文件夹".into());
     }
     let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    if !lib.folders.iter().any(|f| f == &path) {
-        lib.folders.push(path);
-        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
-            lib.folders.pop();
-            return Err(e.to_string());
-        }
-        // 新登记的文件夹要同步进 asset 协议放行名单,否则封面/音频加载不出来
-        refresh_asset_scope(&app);
+    if lib.folders.iter().any(|f| f == &path) {
+        return Ok(());
     }
+    // 嵌套或大小写变体的重复登记会让同一文件被扫成两条曲目:
+    // 组件级双向包含判定(F:\music 与 F:\music\flac、F:\Music 与 f:\music 都算重叠)
+    if let Some(f) = lib
+        .folders
+        .iter()
+        .find(|f| is_under(&path, f) || is_under(f, &path))
+    {
+        return Err(format!("该文件夹与已登记的「{f}」重叠,无需重复添加"));
+    }
+    lib.folders.push(path);
+    if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
+        lib.folders.pop();
+        return Err(e.to_string());
+    }
+    // 新登记的文件夹要同步进 asset 协议放行名单,否则封面/音频加载不出来
+    refresh_asset_scope(&app);
     Ok(())
 }
 
@@ -4017,6 +4100,22 @@ pub fn run() {
             std::fs::create_dir_all(cache_dir.join("covers")).ok();
             // 清理上次预览遗留的暂存目录:确认/取消时都会清理,这里兜底异常退出残留
             let _ = fs::remove_dir_all(cache_dir.join("covers").join("preview"));
+            // 兜底清理异常退出残留的导出暂存目录:正常流程由前端 cleanup_stage 处理,
+            // 崩溃/断电时整包音频会永久留在系统 Temp(可能几百 MB × 多个)
+            for entry in fs::read_dir(std::env::temp_dir())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let p = entry.path();
+                let ours = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("taurimusic-stage-"));
+                if ours {
+                    let _ = fs::remove_dir_all(&p);
+                }
+            }
             let lib = Library::load(&data_dir.join(LIBRARY_FILE));
             let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
