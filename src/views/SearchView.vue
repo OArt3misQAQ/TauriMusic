@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import type { Track } from "../api";
 import { albums, artists, lib, type Album } from "../stores/library";
 import { openAlbum, openArtist, ui } from "../stores/ui";
@@ -10,17 +10,39 @@ import LibGate from "../components/LibGate.vue";
 /** 搜索结果渲染上限:命中数千首时全量渲染 DOM 会卡顿吃内存,超出部分提示细化关键词 */
 const SEARCH_LIMIT = 500;
 
-const query = computed(() => ui.search.trim().toLowerCase());
+/** 键入防抖:大库全量匹配有成本,连续输入时合并成停顿后的一次查询 */
+const debouncedSearch = ref("");
+let searchTimer = 0;
+watch(
+  () => ui.search,
+  (v) => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => (debouncedSearch.value = v), 160);
+  },
+  { immediate: true },
+);
+onUnmounted(() => window.clearTimeout(searchTimer));
+
+const query = computed(() => debouncedSearch.value.trim().toLowerCase());
+
+/** 预建小写索引:曲库变化才重建,每次键入不再对全库逐首 toLowerCase(每次调用都分配新串) */
+const searchIndex = computed(() =>
+  lib.tracks.map((t) => ({
+    t,
+    title: t.title.toLowerCase(),
+    artist: t.artist.toLowerCase(),
+    album: t.album.toLowerCase(),
+  })),
+);
 
 const songsAll = computed<Track[]>(() => {
   const q = query.value;
   if (!q) return [];
-  return lib.tracks.filter(
-    (t) =>
-      t.title.toLowerCase().includes(q) ||
-      t.artist.toLowerCase().includes(q) ||
-      t.album.toLowerCase().includes(q),
-  );
+  const out: Track[] = [];
+  for (const it of searchIndex.value) {
+    if (it.title.includes(q) || it.artist.includes(q) || it.album.includes(q)) out.push(it.t);
+  }
+  return out;
 });
 const songs = computed<Track[]>(() => songsAll.value.slice(0, SEARCH_LIMIT));
 

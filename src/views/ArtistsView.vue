@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { artists, albums, lib } from "../stores/library";
+import { artists, albums, lib, zhCollator } from "../stores/library";
 import { openAlbum, ui } from "../stores/ui";
 import { playTracks } from "../stores/player";
 import AlbumCard from "../components/AlbumCard.vue";
@@ -17,7 +17,7 @@ const artistAlbums = computed(() => {
   if (!name) return [];
   return albums.value
     .filter((a) => a.tracks.some((t) => (t.artist || "未知艺人") === name))
-    .sort((a, b) => a.album.localeCompare(b.album, "zh"));
+    .sort((a, b) => zhCollator.compare(a.album, b.album));
 });
 
 const artistSongs = computed(() => {
@@ -27,7 +27,7 @@ const artistSongs = computed(() => {
     .filter((t) => (t.artist || "未知艺人") === name)
     .sort(
       (a, b) =>
-        a.album.localeCompare(b.album, "zh") ||
+        zhCollator.compare(a.album, b.album) ||
         (a.discNo ?? 1) - (b.discNo ?? 1) ||
         (a.trackNo ?? 0) - (b.trackNo ?? 0),
     );

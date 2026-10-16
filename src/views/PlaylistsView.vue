@@ -3,35 +3,29 @@ import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { lib } from "../stores/library";
 import { openPlaylist, ui } from "../stores/ui";
-import {
-  askCreatePlaylist,
-  openPlaylistMenu,
-  resolvePlaylist,
-  type ResolvedEntry,
-} from "../stores/playlists";
+import { askCreatePlaylist, openPlaylistMenu, resolvePlaylist } from "../stores/playlists";
 import LibGate from "../components/LibGate.vue";
-import type { Playlist } from "../api";
 
 const sorted = computed(() =>
   [...lib.playlists].sort((a, b) => b.createdAt - a.createdAt),
 );
 
-/** 取前 4 张可解析曲目的封面做 2x2 拼贴 */
-function collage(p: Playlist): string[] {
-  const covers: string[] = [];
-  for (const r of resolvePlaylist(p)) {
-    if (r.track?.cover) {
-      covers.push(convertFileSrc(r.track.cover));
-      if (covers.length === 4) break;
+/** 卡片数据一次算完:拼贴封面与缺失数都要整单解析,放进模板函数的话
+ *  每张卡片每次渲染要重复跑 4 遍 resolvePlaylist(全表 Map 查找+对象分配) */
+const cards = computed(() =>
+  sorted.value.map((p) => {
+    let missing = 0;
+    const covers: string[] = [];
+    for (const r of resolvePlaylist(p)) {
+      if (!r.track) {
+        missing += 1;
+      } else if (r.track.cover && covers.length < 4) {
+        covers.push(convertFileSrc(r.track.cover));
+      }
     }
-  }
-  return covers;
-}
-
-const countOf = (p: Playlist): number => p.entries.length;
-const missingOf = (p: Playlist): number =>
-  resolvePlaylist(p).filter((r: ResolvedEntry) => !r.track).length;
-
+    return { p, covers, missing, count: p.entries.length };
+  }),
+);
 </script>
 
 <template>
@@ -55,21 +49,21 @@ const missingOf = (p: Playlist): number =>
 
       <div v-else class="grid">
         <div
-          v-for="p in sorted"
-          :key="p.id"
+          v-for="c in cards"
+          :key="c.p.id"
           class="card"
-          :class="{ active: ui.view === 'playlist' && ui.playlistId === p.id }"
-          @click="openPlaylist(p.id)"
-          @contextmenu="openPlaylistMenu($event, p)"
+          :class="{ active: ui.view === 'playlist' && ui.playlistId === c.p.id }"
+          @click="openPlaylist(c.p.id)"
+          @contextmenu="openPlaylistMenu($event, c.p)"
         >
           <div class="cover-collage">
-            <template v-if="collage(p).length">
+            <template v-if="c.covers.length">
               <img
-                v-for="(c, i) in collage(p)"
+                v-for="(cover, i) in c.covers"
                 :key="i"
-                :src="c"
+                :src="cover"
                 loading="lazy" decoding="async"
-                :class="{ single: collage(p).length === 1 }"
+                :class="{ single: c.covers.length === 1 }"
                 alt=""
               />
             </template>
@@ -81,9 +75,9 @@ const missingOf = (p: Playlist): number =>
               </svg>
             </div>
           </div>
-          <div class="name" :title="p.name">{{ p.name }}</div>
+          <div class="name" :title="c.p.name">{{ c.p.name }}</div>
           <div class="meta">
-            {{ countOf(p) }} 首<template v-if="missingOf(p)"> · {{ missingOf(p) }} 首缺失</template>
+            {{ c.count }} 首<template v-if="c.missing"> · {{ c.missing }} 首缺失</template>
           </div>
         </div>
       </div>

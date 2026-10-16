@@ -25,7 +25,21 @@ const coverUrl = computed(() => {
 const bgStyle = computed(() => ({
   "--np-cover": coverUrl.value ? `url("${coverUrl.value}")` : "none",
 }));
-const progress = computed(() => (player.duration > 0 ? (player.position / player.duration) * 100 : 0));
+const progress = computed(() =>
+  player.duration > 0 ? (seekShow.value / player.duration) * 100 : 0,
+);
+
+/* 拖动进度条:拖动中本地预览,松手(change)才真正 seek——
+   input 每 tick 都写 audio.currentTime 会造成音频抖动 */
+const seeking = ref<number | null>(null);
+const seekShow = computed(() => seeking.value ?? player.position);
+function onSeekInput(e: Event): void {
+  seeking.value = Number((e.target as HTMLInputElement).value);
+}
+function onSeekCommit(e: Event): void {
+  seek(Number((e.target as HTMLInputElement).value));
+  seeking.value = null;
+}
 
 const synced = ref<LyricLine[] | null>(null);
 const plain = ref<string | null>(null);
@@ -58,9 +72,11 @@ async function loadLyrics(): Promise<void> {
     plain.value = payload.plain;
   } catch (err) {
     console.error("歌词加载失败", err);
+    if (current.value?.id !== track.id) return;
     noLyrics.value = true;
   } finally {
-    loadingLyrics.value = false;
+    // 快速切歌时先返回的旧请求不能掐掉新请求的"加载中"指示
+    if (current.value?.id === track.id) loadingLyrics.value = false;
   }
 }
 
@@ -117,10 +133,6 @@ watch(
     if (!open) queueOpen.value = false;
   },
 );
-
-function onSeek(e: Event): void {
-  seek(Number((e.target as HTMLInputElement).value));
-}
 </script>
 
 <template>
@@ -203,16 +215,17 @@ function onSeek(e: Event): void {
         </div>
       </div>
       <div class="seek">
-        <span class="time">{{ fmtTime(player.position) }}</span>
+        <span class="time">{{ fmtTime(seekShow) }}</span>
         <input
           class="range"
           type="range"
           min="0"
           :max="player.duration || 1"
           step="0.1"
-          :value="player.position"
+          :value="seekShow"
           :style="{ '--fill': progress + '%' }"
-          @input="onSeek"
+          @input="onSeekInput"
+          @change="onSeekCommit"
         />
         <span class="time">{{ fmtTime(player.duration) }}</span>
       </div>
