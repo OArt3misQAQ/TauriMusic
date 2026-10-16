@@ -91,6 +91,8 @@ export interface ScanReport {
 export interface LyricLine {
   timeMs: number;
   text: string;
+  /** 对照译文(双语歌词:同句原文之下的中文翻译) */
+  translation: string | null;
 }
 
 export interface LyricsPayload {

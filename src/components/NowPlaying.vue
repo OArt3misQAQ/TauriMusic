@@ -163,7 +163,7 @@ watch(
             :class="{ active: i === activeIdx, near: Math.abs(i - activeIdx) === 1, far: Math.abs(i - activeIdx) > 1 }"
             @click="seek(line.timeMs / 1000)"
           >
-            {{ line.text || "♪" }}
+            {{ line.text || "♪" }}<span v-if="line.translation" class="trans">{{ line.translation }}</span>
           </p>
         </div>
         <div v-else-if="plain" class="lyrics plain">
@@ -434,6 +434,15 @@ watch(
   cursor: pointer;
   transition: color 0.4s var(--ease-out-soft), transform 0.4s var(--ease-out-soft);
   transform-origin: left center;
+}
+/* 对照译文:小一号、轻一档,随所在行一起被高亮/缩放;pre-line 兼容多段译文的换行 */
+.lyrics.synced p .trans {
+  display: block;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  opacity: 0.78;
+  white-space: pre-line;
 }
 .lyrics.synced p.near {
   color: var(--np-fg-2);

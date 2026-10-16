@@ -21,7 +21,7 @@ interface WidgetState {
 interface WidgetLyrics {
   title: string;
   artist: string;
-  synced: { timeMs: number; text: string }[];
+  synced: { timeMs: number; text: string; translation: string | null }[];
   plain: string | null;
 }
 
@@ -59,6 +59,11 @@ const activeIdx = computed(() => {
 const mainLine = computed(() => {
   if (activeIdx.value >= 0) return lyrics.value.synced[activeIdx.value].text || "♪";
   return state.value.title || "TauriMusic";
+});
+/* 当前句对照译文:有译文的双语歌词在大字与预览行之间多一层 */
+const mainTrans = computed(() => {
+  if (activeIdx.value >= 0) return lyrics.value.synced[activeIdx.value].translation;
+  return null;
 });
 const nextLine = computed(() => {
   if (activeIdx.value >= 0 && activeIdx.value + 1 < lyrics.value.synced.length)
@@ -176,6 +181,7 @@ onUnmounted(() => {
     <div class="lyr-plate" data-tauri-drag-region="deep">
       <div class="lyr-lines" data-tauri-drag-region="deep">
         <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
+        <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
         <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
         <div class="progress" aria-hidden="true">
           <div class="progress-fill" :style="{ width: pct + '%' }"></div>
@@ -340,6 +346,20 @@ onUnmounted(() => {
   -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) drop-shadow(0 4px 18px rgba(0, 0, 0, 0.45));
   transition: opacity 0.3s ease, filter 0.3s ease;
+}
+/* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次 */
+.line-trans {
+  font-size: calc(clamp(16px, 10vh, 24px) * var(--fs, 1));
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.88);
+  text-align: center;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.82),
+    0 3px 14px rgba(0, 0, 0, 0.42);
 }
 .line-main.idle {
   /* 暂停/未播放:去渐变降白,示意停机 */

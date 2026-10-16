@@ -1792,8 +1792,17 @@ fn netease_enrich_blocking(
         }
     }
 
-    // 歌词:批量并行匹配无 .lrc 的曲目(网易云 → LRCLIB → 酷我 三级兜底)
-    let targets: Vec<&model::Track> = tracks.iter().filter(|t| t.lrc_path.is_none()).collect();
+    // 歌词:批量并行匹配无 .lrc 的曲目(网易云 → LRCLIB → 酷我 三级兜底);
+    // 已有外文歌词但缺译文的曲目顺带补译(只并译文进现有文件,原文不替换)
+    let targets: Vec<&model::Track> = tracks
+        .iter()
+        .filter(|t| match &t.lrc_path {
+            None => true,
+            Some(p) => fs::read_to_string(p)
+                .map(|c| lyrics::needs_translation(&c))
+                .unwrap_or(false),
+        })
+        .collect();
     let results: Vec<Option<(String, &'static str)>> = std::thread::scope(|scope| {
         let handles: Vec<_> = targets
             .chunks(4)
@@ -1803,6 +1812,11 @@ fn netease_enrich_blocking(
                     chunk
                         .iter()
                         .map(|t| {
+                            if t.lrc_path.is_some() {
+                                // 补译路径:网易 tlyric 与现有文件对齐合并,失败静默跳过
+                                return netease_backfill_translation(client, t)
+                                    .map(|text| (text, "netease"));
+                            }
                             netease_lyric(client, &t.title, &t.artist, Some(t.duration))
                                 .map(|text| (text, "netease"))
                                 .or_else(|| {
@@ -2115,12 +2129,13 @@ fn pick_netease_song<'a>(
     best.map(|(_, s)| s)
 }
 
-pub fn netease_lyric(
+/// 网易云搜歌 + 同一次请求带回歌词原文与译文(tv=1 时接口返回 tlyric 官方译配)
+fn netease_lyric_pair(
     client: &reqwest::blocking::Client,
     title: &str,
     artist: &str,
     duration: Option<f64>,
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     let want_live = title_is_live(title);
     // 现场版全名搜索常落空(各家括号后缀命名不一),补一条去括号搜索把两个版本都捞进候选
     let mut keywords = vec![title.to_string()];
@@ -2143,7 +2158,7 @@ pub fn netease_lyric(
         let Some(id) = pick["id"].as_i64() else {
             continue;
         };
-        let url = format!("https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=-1");
+        let url = format!("https://music.163.com/api/song/lyric?id={id}&lv=1&kv=1&tv=1");
         let Ok(resp) = client.get(&url).send() else {
             continue;
         };
@@ -2157,11 +2172,50 @@ pub fn netease_lyric(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                return Some(text.to_string());
+                let trans = v
+                    .pointer("/tlyric/lyric")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                return Some((text.to_string(), trans.map(str::to_string)));
             }
         }
     }
     None
+}
+
+pub fn netease_lyric(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    artist: &str,
+    duration: Option<f64>,
+) -> Option<String> {
+    let (text, trans) = netease_lyric_pair(client, title, artist, duration)?;
+    Some(match trans {
+        // 原文与译文出自同一次请求(同一版本),配不上的译文行自然丢弃
+        Some(t) => lyrics::merge_translation(&text, &t).0,
+        None => text,
+    })
+}
+
+/// 已有歌词的曲目补译文:再取一次网易云 tlyric,按时间戳并进现有文件。
+/// 原文一个字都不换;配对率不足八成(网易版本与本地文件错位)时宁可不写
+fn netease_backfill_translation(
+    client: &reqwest::blocking::Client,
+    t: &model::Track,
+) -> Option<String> {
+    let path = t.lrc_path.as_deref()?;
+    let orig = fs::read_to_string(path).ok()?;
+    if !lyrics::needs_translation(&orig) {
+        return None;
+    }
+    let (_, trans) = netease_lyric_pair(client, &t.title, &t.artist, Some(t.duration))?;
+    let (merged, paired, total) = lyrics::merge_translation(&orig, &trans?);
+    if total > 0 && paired * 5 >= total * 4 {
+        Some(merged)
+    } else {
+        None
+    }
 }
 
 // ===== LRCLIB 歌词兜底 + iTunes 封面兜底(公开接口,无需密钥) =====
@@ -2185,14 +2239,16 @@ pub fn generic_client() -> reqwest::blocking::Client {
 }
 
 /// 从 LRCLIB 搜索结果里挑最佳一条:艺人能对上才要;
-/// 现场版标记优先于同步格式优先于时长吻合(时间轴错了同步歌词毫无意义)
+/// 现场版标记优先于同步格式优先于时长吻合(时间轴错了同步歌词毫无意义)。
+/// 返回 (歌词文本, 译文):translatedLyrics 多为无时间戳的纯文本,
+/// 由调用方交给 merge_translation——对不齐的译文会原样丢弃
 fn pick_lrclib_result(
     items: &[serde_json::Value],
     artist: &str,
     duration: Option<f64>,
     want_live: bool,
-) -> Option<String> {
-    let mut best: Option<(u8, String)> = None;
+) -> Option<(String, Option<String>)> {
+    let mut best: Option<(u8, String, Option<String>)> = None;
     for it in items {
         let Some(name) = it["artistName"].as_str() else {
             continue;
@@ -2211,6 +2267,11 @@ fn pick_lrclib_result(
         let Some(text) = synced.or(plain) else {
             continue; // 纯音乐条目两字段皆空,跳过
         };
+        let trans = it["translatedLyrics"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let mut score = 0u8;
         if want_live && it["trackName"].as_str().map(title_is_live).unwrap_or(false) {
             score += 4; // 现场版标记是版本正确性的最强信号
@@ -2223,11 +2284,11 @@ fn pick_lrclib_result(
                 score += 1; // 时长吻合基本可断定是同一版本
             }
         }
-        if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
-            best = Some((score, text.to_string()));
+        if best.as_ref().map(|(s, _, _)| score > *s).unwrap_or(true) {
+            best = Some((score, text.to_string(), trans));
         }
     }
-    best.map(|(_, text)| text)
+    best.map(|(_, text, trans)| (text, trans))
 }
 
 /// LRCLIB 歌词兜底:网易云没有时,从这里补逐行同步歌词(或纯文本)
@@ -2257,7 +2318,14 @@ pub fn lrclib_lyric(
                     for key in ["syncedLyrics", "plainLyrics"] {
                         if let Some(text) = v[key].as_str().map(str::trim).filter(|s| !s.is_empty())
                         {
-                            return Some(text.to_string());
+                            let trans = v["translatedLyrics"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty());
+                            return Some(match trans {
+                                Some(t) => lyrics::merge_translation(text, t).0,
+                                None => text.to_string(),
+                            });
                         }
                     }
                 }
@@ -2304,8 +2372,11 @@ pub fn lrclib_lyric(
         let Some(items) = v.as_array() else {
             continue;
         };
-        if let Some(text) = pick_lrclib_result(items, artist, duration, want_live) {
-            return Some(text);
+        if let Some((text, trans)) = pick_lrclib_result(items, artist, duration, want_live) {
+            return Some(match trans {
+                Some(t) => lyrics::merge_translation(&text, &t).0,
+                None => text,
+            });
         }
     }
     None
@@ -4299,8 +4370,8 @@ mod tests {
                 "syncedLyrics": "[00:01.00] line", "plainLyrics": "dup"}),
         ];
         assert_eq!(
-            pick_lrclib_result(&items, "beyond", Some(300.0), false).as_deref(),
-            Some("[00:01.00] line")
+            pick_lrclib_result(&items, "beyond", Some(300.0), false),
+            Some(("[00:01.00] line".into(), None))
         );
         // 查询艺人与所有候选都对不上 → 不挑任何一条
         assert_eq!(
@@ -4313,8 +4384,17 @@ mod tests {
             "syncedLyrics": "[00:02.00] y", "plainLyrics": ""}),
         ];
         assert_eq!(
-            pick_lrclib_result(&t2, "陈奕迅", None, false).as_deref(),
-            Some("[00:02.00] y")
+            pick_lrclib_result(&t2, "陈奕迅", None, false),
+            Some(("[00:02.00] y".into(), None))
+        );
+        // 带译文的条目:译文随歌词一起带回
+        let t3 = vec![
+            serde_json::json!({"artistName": "beyond", "duration": 300.0,
+            "syncedLyrics": "[00:01.00] line", "translatedLyrics": "[00:01.00] 行"}),
+        ];
+        assert_eq!(
+            pick_lrclib_result(&t3, "beyond", Some(300.0), false),
+            Some(("[00:01.00] line".into(), Some("[00:01.00] 行".into())))
         );
     }
 
@@ -4442,12 +4522,12 @@ mod tests {
         // 现场版请求:live 纯文本胜过录音室同步歌词——版本错了时间轴同步毫无意义
         assert_eq!(
             pick_lrclib_result(&items, "李晓杰", Some(280.0), true).unwrap(),
-            "b"
+            ("b".into(), None)
         );
         // 非现场版请求:同步格式优先
         assert_eq!(
             pick_lrclib_result(&items, "李晓杰", Some(280.0), false).unwrap(),
-            "[00:01]a"
+            ("[00:01]a".into(), None)
         );
     }
 
