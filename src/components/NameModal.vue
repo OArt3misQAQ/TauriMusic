@@ -15,6 +15,9 @@ watch(
     inputEl.value?.focus();
     inputEl.value?.select();
   },
+  // 组件本身 v-if 挂载:创建时 open 已经是 true,之后不再变化——
+  // 没有 immediate 的话重命名的旧名永远带不进来,输入框空白且无焦点
+  { immediate: true },
 );
 
 function confirm(): void {

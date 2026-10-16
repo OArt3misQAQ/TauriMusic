@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { lib, zhCollator, trackAlbumKey } from "../stores/library";
-import { loadStats, stats, todayStr } from "../stores/stats";
+import { loadStats, stats, statsLoadError, todayStr } from "../stores/stats";
 
 /** 听歌统计页:全部聚合都从「单曲统计 × 当前曲库元数据」即时推导,
  *  统计文件里不冗余存歌手/专辑——标签修改后各榜单自动跟随曲库走 */
 
 onMounted(() => void loadStats());
+
+/** 拉取失败可重试,不能永久停在"正在加载" */
+function retry(): void {
+  statsLoadError.value = null;
+  void loadStats();
+}
 
 const trackMeta = computed(() => {
   const m = new Map<string, { title: string; artist: string; album: string }>();
@@ -160,7 +166,11 @@ function chartLabel(key: string): string {
       </div>
     </header>
 
-    <div v-if="!stats" class="empty"><h2>正在加载统计数据…</h2></div>
+    <div v-if="statsLoadError" class="empty">
+      <h2>统计数据读取失败</h2>
+      <button class="mini ghost" @click="retry">重试</button>
+    </div>
+    <div v-else-if="!stats" class="empty"><h2>正在加载统计数据…</h2></div>
 
     <div v-else-if="!hasData" class="empty">
       <svg class="icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">

@@ -229,6 +229,9 @@ export function purgeDeleted(ids: string[]): void {
     player.playing = false;
     player.position = 0;
     player.duration = 0;
+    // 队列已空:来源标记必须一并作废,否则之后对同一列表点「随机播放」
+    // 会命中"同列表已在队列"分支,对着空队列重洗后直接返回,点了没反应
+    queueSource = null;
     return;
   }
   // 非当前播放:重建队列并尽量落在原来的曲子上

@@ -38,7 +38,6 @@ interface UiState {
   nowPlayingOpen: boolean;
   /** 首次启动使用声明 */
   welcomeOpen: boolean;
-  /** 设置弹窗 */
   /** 关于弹窗 */
   aboutOpen: boolean;
 }

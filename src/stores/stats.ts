@@ -17,6 +17,8 @@ export const statsEnabled = ref(storageGetString(StorageKeys.stats, "1") !== "0"
 
 /** 统计页渲染用的全量数据:打开页面时从后端拉一次 */
 export const stats = ref<StatsData | null>(null);
+/** 拉取失败原因(null = 未失败):给统计页重试入口,避免永久卡"正在加载" */
+export const statsLoadError = ref<string | null>(null);
 
 export function setStatsEnabled(on: boolean): void {
   if (statsEnabled.value === on) return;
@@ -25,9 +27,11 @@ export function setStatsEnabled(on: boolean): void {
   if (on) {
     beginSpanIfNeeded();
   } else {
-    // 关闭即刻停表:最后一段按正常规则结算冲刷(关闭前收集的数据),之后不再采集
+    // 关闭即刻停表:最后一段按正常规则结算并强制冲刷(关闭前收集的数据),
+    // 之后不再采集。强制冲刷不能被"开关已关"拦下,否则这批数据要等
+    // 重新开启后的下一个周期才可能补发,中途退出即彻底丢失
     endSpan(true);
-    void flush();
+    void flush(true);
     // 正看着统计页时关闭:退出页面
     if (ui.view === "stats") ui.view = "albums";
   }
@@ -41,7 +45,13 @@ export async function clearStats(): Promise<void> {
 
 /** 统计页打开时拉取全量数据 */
 export async function loadStats(): Promise<void> {
-  stats.value = await api.getStats();
+  statsLoadError.value = null;
+  try {
+    stats.value = await api.getStats();
+  } catch (err) {
+    console.error("读取统计数据失败", err);
+    statsLoadError.value = String(err);
+  }
 }
 
 // ===== 采集:墙钟跨度 =====
@@ -99,11 +109,12 @@ function endSpan(final: boolean): void {
   }
 }
 
-/** 折叠当前进行中的跨度(不判定播放次数)并冲刷缓冲 */
-async function flush(): Promise<void> {
+/** 折叠当前进行中的跨度(不判定播放次数)并冲刷缓冲;force 供关闭开关时的收尾冲刷,
+ *  不受"开关已关"拦截 */
+async function flush(force = false): Promise<void> {
   endSpan(false);
   if (spanStart === 0 && statsEnabled.value) beginSpanIfNeeded();
-  if (!statsEnabled.value) return;
+  if (!statsEnabled.value && !force) return;
   if (Object.keys(pendingSec).length === 0 && pendingPlays.length === 0 && pendingDaySec <= 0) return;
   const samples = pendingSec;
   const plays = pendingPlays;

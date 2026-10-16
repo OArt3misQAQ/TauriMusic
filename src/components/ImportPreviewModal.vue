@@ -18,8 +18,9 @@ const totalTracks = computed(() =>
   importPreview.packages.reduce((n, p) => n + p.tracks.length, 0),
 );
 
-const checkedCount = computed(
-  () => importPreview.packages.filter((p) => p.checked).length,
+/** 勾选包内的曲目数(按钮按"首"计,不能报包数) */
+const checkedCount = computed(() =>
+  importPreview.packages.reduce((n, p) => n + (p.checked ? p.tracks.length : 0), 0),
 );
 
 const allChecked = computed(
@@ -142,7 +143,7 @@ function coverSrc(pkg: PackagePreview, t: PreviewTrack): string | undefined {
               :style="{ animationDelay: `${Math.min(i, 12) * 36}ms` }"
             >
               <span class="idx">{{ i + 1 }}</span>
-              <img v-if="t.cover" class="thumb" :src="t.cover" alt="" />
+              <img v-if="t.cover" class="thumb" :src="convertFileSrc(t.cover)" alt="" />
               <span v-else class="thumb ph">♪</span>
               <span class="names">
                 <span class="t" :title="t.title">{{ t.title }}</span>

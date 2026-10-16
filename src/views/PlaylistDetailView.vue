@@ -5,6 +5,7 @@ import { fmtTime, playTracks, shuffleList } from "../stores/player";
 import { go, openAlbum, openArtist, ui } from "../stores/ui";
 import { openCtx, type CtxItem } from "../stores/context";
 import { exportTrackTmc } from "../stores/library";
+import { useConfirmableAction } from "../composables/useConfirmableAction";
 import {
   askRenamePlaylist,
   deletePlaylist,
@@ -14,6 +15,7 @@ import {
   playlistById,
   removeEntry,
   resolvePlaylist,
+  type ResolvedEntry,
 } from "../stores/playlists";
 
 const pl = computed(() => playlistById(ui.playlistId));
@@ -31,12 +33,18 @@ function shuffleAll(): void {
   shuffleList(list);
 }
 
-/** 点击某行:以整个播放列表为队列,从该行开始播放 */
-function playRow(index: number): void {
-  const r = resolved.value[index];
-  if (!r?.track) return;
-  const pos = playable.value.findIndex((t) => t.id === r.track!.id);
-  playTracks(playable.value, Math.max(0, pos));
+/** 删除列表不可恢复(与删歌不同,没有回收站兜底):两段确认防误触 */
+const { confirmingId: confirmingDeletePl, confirm: confirmDeletePl } = useConfirmableAction();
+
+function onDeletePlaylist(): void {
+  if (!pl.value) return;
+  if (confirmDeletePl("__playlist__")) void deletePlaylist(pl.value);
+}
+
+/** 菜单打开期间曲库可能被后台事件(library-changed)刷新,条目顺序与数量会变;
+ *  执行时按 entry 引用重新定位,已不在列表里就放弃,不盲用打开菜单瞬间的下标 */
+function entryIndexNow(r: ResolvedEntry): number {
+  return pl.value ? pl.value.entries.indexOf(r.entry) : -1;
 }
 
 function onRemove(index: number): void {
@@ -47,6 +55,14 @@ function onMove(index: number, delta: number): void {
   if (pl.value) void moveEntry(pl.value.id, index, index + delta);
 }
 
+/** 点击某行:以整个播放列表为队列,从该行开始播放 */
+function playRow(index: number): void {
+  const r = resolved.value[index];
+  if (!r?.track) return;
+  const pos = playable.value.findIndex((t) => t.id === r.track!.id);
+  playTracks(playable.value, Math.max(0, pos));
+}
+
 /** 歌单内歌曲右键菜单 */
 function rowMenu(e: MouseEvent, index: number): void {
   const r = resolved.value[index];
@@ -54,8 +70,12 @@ function rowMenu(e: MouseEvent, index: number): void {
   const t = r.track;
   const items: CtxItem[] = [];
   if (t) {
+    const playThis = () => {
+      const i = entryIndexNow(r);
+      if (i >= 0) playRow(i);
+    };
     items.push(
-      { label: "播放", icon: "play", action: () => playRow(index) },
+      { label: "播放", icon: "play", action: playThis },
       {
         label: "查看专辑",
         icon: "album",
@@ -70,11 +90,32 @@ function rowMenu(e: MouseEvent, index: number): void {
       },
     );
   }
-  if (index > 0) items.push({ label: "上移", action: () => onMove(index, -1) });
-  if (pl.value && index < pl.value.entries.length - 1) {
-    items.push({ label: "下移", action: () => onMove(index, 1) });
+  if (index > 0) {
+    items.push({
+      label: "上移",
+      action: () => {
+        const i = entryIndexNow(r);
+        if (i > 0) onMove(i, -1);
+      },
+    });
   }
-  items.push({ label: "从列表移除(不删文件)", danger: true, action: () => onRemove(index) });
+  if (pl.value && index < pl.value.entries.length - 1) {
+    items.push({
+      label: "下移",
+      action: () => {
+        const i = entryIndexNow(r);
+        if (i >= 0 && i < pl.value!.entries.length - 1) onMove(i, 1);
+      },
+    });
+  }
+  items.push({
+    label: "从列表移除(不删文件)",
+    danger: true,
+    action: () => {
+      const i = entryIndexNow(r);
+      if (i >= 0) onRemove(i);
+    },
+  });
   openCtx(e, items);
 }
 </script>
@@ -109,8 +150,13 @@ function rowMenu(e: MouseEvent, index: number): void {
             导出 TMCL
           </button>
           <button class="ghost-pill" @click="askRenamePlaylist(pl)">重命名</button>
-          <button class="ghost-pill danger" title="仅删除列表,不删除音乐文件" @click="deletePlaylist(pl)">
-            删除列表
+          <button
+            class="ghost-pill danger"
+            :class="{ confirm: confirmingDeletePl }"
+            :title="confirmingDeletePl ? '再次点击确认删除' : '仅删除列表,不删除音乐文件(不可恢复)'"
+            @click="onDeletePlaylist"
+          >
+            {{ confirmingDeletePl ? "确认删除?" : "删除列表" }}
           </button>
         </div>
       </div>
@@ -269,6 +315,10 @@ function rowMenu(e: MouseEvent, index: number): void {
 .ghost-pill.danger {
   color: var(--danger);
 }
+.ghost-pill.confirm {
+  background: var(--danger);
+  color: #fff;
+}
 
 .rows {
   display: flex;
@@ -284,6 +334,9 @@ function rowMenu(e: MouseEvent, index: number): void {
   cursor: pointer;
   min-width: 0;
   transition: background 0.25s var(--ease-out-soft);
+  /* TMCL 导入的大歌单轻松上千行:视口外的行跳过布局与绘制 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
 }
 .row:hover {
   background: var(--hover);

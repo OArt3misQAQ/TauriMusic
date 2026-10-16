@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { ui, setThemeMode, setSkin } from "../stores/ui";
 import { lib, flashStatus, openImportDir, addFolder, rescan, importTmcPick, importMusicPick } from "../stores/library";
 import { statsEnabled, setStatsEnabled, clearStats } from "../stores/stats";
@@ -13,12 +13,26 @@ const skinOptions = [
 /** 桌面歌词小窗开关:开关状态持久化,窗口显示/隐藏由 Rust 命令执行;
  *  小窗自己的关闭按钮也会写同一份 localStorage(跨窗口 storage 事件同步) */
 const lyricsOn = ref(localStorage.getItem("tm-lyrics-on") === "1");
-function toggleLyrics(): void {
+async function toggleLyrics(): Promise<void> {
   const next = !lyricsOn.value;
-  lyricsOn.value = next;
-  localStorage.setItem("tm-lyrics-on", next ? "1" : "0");
-  void (next ? api.showLyricsWindow() : api.hideLyricsWindow());
+  try {
+    // 先执行命令成功后才提交状态:失败时开关与真实窗口脱节,
+    // 下次启动还会按 localStorage 把小窗拉起来
+    await (next ? api.showLyricsWindow() : api.hideLyricsWindow());
+    lyricsOn.value = next;
+    localStorage.setItem("tm-lyrics-on", next ? "1" : "0");
+  } catch (err) {
+    console.error("切换歌词小窗失败", err);
+    flashStatus(`歌词小窗切换失败: ${String(err)}`);
+  }
 }
+// 小窗自己的关闭按钮写的是另一份文档的 localStorage:监听 storage 事件回显,
+// 否则设置页开着时开关状态与真实窗口不一致
+function onLyricsStorage(e: StorageEvent): void {
+  if (e.key === "tm-lyrics-on") lyricsOn.value = e.newValue === "1";
+}
+window.addEventListener("storage", onLyricsStorage);
+onUnmounted(() => window.removeEventListener("storage", onLyricsStorage));
 
 const themeOptions = [
   { value: "system", label: "跟随系统" },
@@ -72,6 +86,7 @@ async function toggleAssoc(a: AssocState): Promise<void> {
 // 清除统计数据:两段确认(3 秒内再点一次才执行),防止误触毁掉全部统计
 const clearArmed = ref(false);
 let clearTimer = 0;
+onUnmounted(() => window.clearTimeout(clearTimer));
 
 async function clearStatsConfirmed(): Promise<void> {
   if (!clearArmed.value) {

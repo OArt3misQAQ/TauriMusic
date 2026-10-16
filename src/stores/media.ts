@@ -43,6 +43,8 @@ async function broadcastLyrics(): Promise<void> {
   }
   try {
     const payload = await api.getLyrics(t.id);
+    // 快速切歌时旧请求可能后返回:不校验就会把新歌的歌词窗覆盖成旧歌的词
+    if (current.value?.id !== t.id) return;
     widgetLyrics = {
       title: t.title,
       artist: t.artist,
@@ -50,6 +52,7 @@ async function broadcastLyrics(): Promise<void> {
       plain: payload?.plain ?? null,
     };
   } catch {
+    if (current.value?.id !== t.id) return;
     widgetLyrics = { title: t.title, artist: t.artist, synced: [], plain: null };
   }
   void emit("media://lyrics", widgetLyrics);

@@ -1,4 +1,4 @@
-import { type Ref, ref } from "vue";
+import { type Ref, onUnmounted, ref } from "vue";
 
 /**
  * 两段式删除确认:第一次调用进入确认态,`timeout` 毫秒内再次调用才执行。
@@ -21,6 +21,8 @@ export function useConfirmableAction(timeout = 3000): {
       return false;
     }
     confirmingId.value = null;
+    // 命中确认也要清掉旧计时器,否则 3 秒后对已复位的值再写一次 null
+    window.clearTimeout(timer);
     return true;
   }
 
@@ -28,6 +30,9 @@ export function useConfirmableAction(timeout = 3000): {
     confirmingId.value = null;
     window.clearTimeout(timer);
   }
+
+  // 调用方组件卸载(切视图)时停表,不让定时器对着已销毁的组件空触发
+  onUnmounted(() => window.clearTimeout(timer));
 
   return { confirmingId, confirm, reset };
 }

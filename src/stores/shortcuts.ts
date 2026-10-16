@@ -1,6 +1,8 @@
 import { player, toggle, next, prev, seek, setVolume } from "./player";
 import { ui } from "./ui";
 import { ctx } from "./context";
+import { exportState, importPreview } from "./library";
+import { nameDialog, picker } from "./playlists";
 
 const SEEK_STEP = 5; // 秒
 const VOL_STEP = 0.05;
@@ -50,8 +52,19 @@ function onKey(e: KeyboardEvent): void {
   const t = e.target as HTMLElement | null;
 
   if (e.key === "Escape") {
-    // 弹窗/右键菜单有自己的关闭逻辑,不重复处理
-    if (ui.welcomeOpen || ui.aboutOpen || ctx.items) return;
+    // 各类弹窗/右键菜单有自己的关闭逻辑,不重复处理;
+    // 漏掉任何一种都会导致一次 Esc 同时关掉弹窗和全屏播放页两层
+    if (
+      ui.welcomeOpen ||
+      ui.aboutOpen ||
+      ctx.items ||
+      picker.trackIds ||
+      nameDialog.open ||
+      exportState.open ||
+      importPreview.open
+    ) {
+      return;
+    }
     if (ui.nowPlayingOpen) {
       e.preventDefault();
       ui.nowPlayingOpen = false;

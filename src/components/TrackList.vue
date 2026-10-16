@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { RecycleScroller } from "vue-virtual-scroller";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Track } from "../api";
@@ -43,6 +43,19 @@ function onDelete(t: Track): void {
 /** 多选:Ctrl/Shift 点击进入选择;Shift 为范围选 */
 const selected = ref<Set<string>>(new Set());
 let anchorIndex = -1;
+
+// 曲目列表被替换(搜索词收窄/删除后)时修剪选择集:残留的不可见 id 仍会随
+// 批量删除一起提交,操作条计数也会虚高;Shift 范围选的锚点随之失效,必须重置
+watch(
+  () => props.tracks,
+  () => {
+    if (selected.value.size > 0) {
+      const visible = new Set(props.tracks.map((t) => t.id));
+      selected.value = new Set([...selected.value].filter((id) => visible.has(id)));
+    }
+    anchorIndex = -1;
+  },
+);
 
 function toggleSelect(t: Track, i: number): void {
   const next = new Set(selected.value);
@@ -100,8 +113,9 @@ function exportSelected(): void {
 const { confirmingId: confirmingBatchDelete, confirm: confirmBatch } = useConfirmableAction();
 
 function deleteSelected(): void {
+  // 按当前可见曲目过滤后提交,与"播放/导出选中"的行为口径一致
   if (confirmBatch("__batch__")) {
-    void deleteTracks([...selected.value]).then(clearSelection);
+    void deleteTracks(selectedTracks().map((t) => t.id)).then(clearSelection);
   }
 }
 

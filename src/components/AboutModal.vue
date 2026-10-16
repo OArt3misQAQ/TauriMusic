@@ -47,7 +47,11 @@ onMounted(async () => {
   usageTimer = window.setInterval(refreshUsage, 2000);
 });
 
-onUnmounted(() => window.clearInterval(usageTimer));
+onUnmounted(() => {
+  window.clearInterval(usageTimer);
+  // copiedTimer 不清的话,弹窗关闭后 2 秒仍会对已卸载组件的 ref 空写一次
+  window.clearTimeout(copiedTimer);
+});
 
 async function copyMail(): Promise<void> {
   try {

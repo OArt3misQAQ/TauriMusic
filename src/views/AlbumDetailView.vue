@@ -4,7 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { albumByKey, enrichAlbumNetease, deleteTracks, exportAlbumTmca } from "../stores/library";
 import { useConfirmableAction } from "../composables/useConfirmableAction";
 import { playTracks, shuffleList } from "../stores/player";
-import { ui, go } from "../stores/ui";
+import { ui, go, openArtist } from "../stores/ui";
 import TrackList from "../components/TrackList.vue";
 
 const album = computed(() => albumByKey(ui.albumKey ?? ""));
@@ -40,16 +40,24 @@ function onExportAlbum(): void {
   void exportAlbumTmca(album.value.key, album.value.album);
 }
 
+/** 点艺人名跳艺人页:艺人列表按 t.artist 构建,而专辑头展示的是
+ *  albumArtist(可能不同)——直接传专辑头名字会因不在列表里落到排序第一人 */
+function gotoArtist(): void {
+  if (!album.value) return;
+  openArtist(album.value.tracks[0]?.artist || album.value.artist);
+}
+
 /** 删除整张专辑(两段确认,确认后回到专辑列表) */
 const { confirmingId: confirmingDelete, confirm: confirmDelete } = useConfirmableAction();
 
 function onDeleteAlbum(): void {
   if (!album.value) return;
   const ids = album.value.tracks.map((t) => t.id);
-  // 删除失败(文件被占用)时留在原页,状态条已提示
   if (confirmDelete("__album__")) {
-    void deleteTracks(ids).then((ok) => {
-      if (ok) go("albums");
+    // 以"专辑是否还在"决定去留:部分删除失败(文件被占用)时专辑仍残留,
+    // 留在原页才能让用户看到还剩几首
+    void deleteTracks(ids).then(() => {
+      if (!albumByKey(ui.albumKey ?? "")) go("albums");
     });
   }
 }
@@ -71,7 +79,7 @@ function onDeleteAlbum(): void {
       <div class="meta-col">
         <div class="kind">专辑</div>
         <h1>{{ album.album }}</h1>
-        <div class="artist" @click="go('artists')">{{ album.artist }}</div>
+        <div class="artist" @click="gotoArtist">{{ album.artist }}</div>
         <div class="sub">{{ meta }}</div>
         <div class="btns">
           <button class="primary-pill" @click="playTracks(album.tracks, 0)">播放</button>
