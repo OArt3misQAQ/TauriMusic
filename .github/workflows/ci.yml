@@ -15,6 +15,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      # tauri.conf.json 声明了 resources/ffmpeg.exe,构建脚本会校验资源存在;
+      # CI 只编译测试不运行应用,真包由 Release 工作流下载,这里放占位文件即可
+      - name: ffmpeg 资源占位
+        run: mkdir -p src-tauri/resources && touch src-tauri/resources/ffmpeg.exe
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -38,6 +42,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # 同 Linux job:构建脚本校验 resources/ffmpeg.exe 存在,CI 放占位文件即可
+      - name: ffmpeg 资源占位
+        run: New-Item -ItemType File -Force -Path src-tauri/resources/ffmpeg.exe | Out-Null
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
