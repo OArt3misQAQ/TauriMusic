@@ -72,6 +72,27 @@ function onPointerMove(e: PointerEvent): void {
   });
 }
 
+/* 窗口失焦/最小化时冻结环境层动画(样式见 style.css .anim-idle):
+   ambient 的常驻位移是唯一让"玻璃卡 backdrop-filter 每帧重新采样"成立的
+   变化源,软件光栅下逐帧重绘的临时纹理会把渲染进程内存推到高水位不回落;
+   无人观看时暂停,内存与 CPU 的持续 churn 一并掐断 */
+let onWindowBlur: () => void;
+let onWindowFocus: () => void;
+let onVisibility: () => void;
+function initAmbientIdle(): void {
+  const root = document.documentElement;
+  const sync = (): void => {
+    root.classList.toggle("anim-idle", !document.hasFocus() || document.hidden);
+  };
+  onWindowBlur = sync;
+  onWindowFocus = sync;
+  onVisibility = sync;
+  window.addEventListener("blur", onWindowBlur);
+  window.addEventListener("focus", onWindowFocus);
+  document.addEventListener("visibilitychange", onVisibility);
+  sync();
+}
+
 /** 托盘迷你面板是同前端的第二个窗口:按标签分支渲染,不跑主窗口的重初始化 */
 const isTrayPopup = getCurrentWindow().label === "tray";
 /** 桌面歌词小窗:同第三窗口,只渲染小窗自身 */
@@ -94,6 +115,7 @@ onMounted(() => {
   initWelcome();
   initStats();
   initMediaBridge();
+  initAmbientIdle();
   void initLibrary();
   void initDragImport();
   initShortcuts();
@@ -101,6 +123,9 @@ onMounted(() => {
 });
 onUnmounted(() => {
   window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("blur", onWindowBlur);
+  window.removeEventListener("focus", onWindowFocus);
+  document.removeEventListener("visibilitychange", onVisibility);
   cancelAnimationFrame(pointerRaf);
 });
 </script>
