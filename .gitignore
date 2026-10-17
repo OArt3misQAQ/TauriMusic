@@ -48,3 +48,6 @@ TauriMusic-promo/
 # 宣传页源码(仅本地展示,不入库)
 web/
 src-tauri/resources/ffmpeg.exe
+html/
+
+*.gitignore
