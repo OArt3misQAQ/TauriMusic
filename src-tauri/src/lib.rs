@@ -10,8 +10,13 @@ use sha2::Digest as _;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{ipc::InvokeResponseBody, Emitter, Listener, Manager, State, WindowEvent};
+
+/// 统计落盘节流:上次持久化的 unix 秒。内存态每次冲刷都合并,
+/// 磁盘全量重写(stats.json 随历史增长)压到最低 2 分钟一次,强冲不受限
+static STATS_LAST_SAVE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -3136,58 +3141,80 @@ fn entry_of(t: &model::Track) -> model::PlaylistEntry {
 }
 
 #[tauri::command]
-fn create_playlist(name: String, state: State<AppState>) -> Result<Vec<model::Playlist>, String> {
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err("播放列表名称不能为空".into());
-    }
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    if lib.playlists.iter().any(|p| p.name == name) {
-        return Err("已存在同名播放列表".into());
-    }
-    lib.playlists.push(model::Playlist {
-        id: new_playlist_id(&name),
-        name,
-        created_at: now_secs(),
-        entries: Vec::new(),
-    });
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(lib.playlists.clone())
+async fn create_playlist(
+    name: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<model::Playlist>, String> {
+    // 整库 JSON 落盘是磁盘活:同步命令跑主线程,大曲库/慢盘下会卡 UI 帧
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("播放列表名称不能为空".into());
+        }
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        if lib.playlists.iter().any(|p| p.name == name) {
+            return Err("已存在同名播放列表".into());
+        }
+        lib.playlists.push(model::Playlist {
+            id: new_playlist_id(&name),
+            name,
+            created_at: now_secs(),
+            entries: Vec::new(),
+        });
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(lib.playlists.clone())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn rename_playlist(
+async fn rename_playlist(
     id: String,
     name: String,
-    state: State<AppState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<model::Playlist>, String> {
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err("播放列表名称不能为空".into());
-    }
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    if lib.playlists.iter().any(|p| p.id != id && p.name == name) {
-        return Err("已存在同名播放列表".into());
-    }
-    let pl = lib
-        .playlists
-        .iter_mut()
-        .find(|p| p.id == id)
-        .ok_or("播放列表不存在")?;
-    pl.name = name;
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(lib.playlists.clone())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("播放列表名称不能为空".into());
+        }
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        if lib.playlists.iter().any(|p| p.id != id && p.name == name) {
+            return Err("已存在同名播放列表".into());
+        }
+        let pl = lib
+            .playlists
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("播放列表不存在")?;
+        pl.name = name;
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(lib.playlists.clone())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn delete_playlist(id: String, state: State<AppState>) -> Result<Vec<model::Playlist>, String> {
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    lib.playlists.retain(|p| p.id != id);
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(lib.playlists.clone())
+async fn delete_playlist(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<model::Playlist>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        lib.playlists.retain(|p| p.id != id);
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(lib.playlists.clone())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 把曲目加入播放列表(按路径去重,返回新增数量与最新列表)
@@ -3200,92 +3227,107 @@ pub struct AddToPlaylistReport {
 }
 
 #[tauri::command]
-fn add_tracks_to_playlist(
+async fn add_tracks_to_playlist(
     playlist_id: String,
     track_ids: Vec<String>,
-    state: State<AppState>,
+    app: tauri::AppHandle,
 ) -> Result<AddToPlaylistReport, String> {
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    let mut resolved: Vec<model::PlaylistEntry> = Vec::new();
-    let by_id: std::collections::HashMap<&str, &model::Track> =
-        lib.tracks.iter().map(|t| (t.id.as_str(), t)).collect();
-    for id in &track_ids {
-        if let Some(t) = by_id.get(id.as_str()) {
-            resolved.push(entry_of(t));
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        let mut resolved: Vec<model::PlaylistEntry> = Vec::new();
+        let by_id: std::collections::HashMap<&str, &model::Track> =
+            lib.tracks.iter().map(|t| (t.id.as_str(), t)).collect();
+        for id in &track_ids {
+            if let Some(t) = by_id.get(id.as_str()) {
+                resolved.push(entry_of(t));
+            }
         }
-    }
-    if resolved.is_empty() {
-        return Err("未找到可加入的曲目".into());
-    }
-    let mut added = 0u32;
-    let mut skipped = 0u32;
-    {
+        if resolved.is_empty() {
+            return Err("未找到可加入的曲目".into());
+        }
+        let mut added = 0u32;
+        let mut skipped = 0u32;
+        {
+            let pl = lib
+                .playlists
+                .iter_mut()
+                .find(|p| p.id == playlist_id)
+                .ok_or("播放列表不存在")?;
+            for e in resolved {
+                if pl.entries.iter().any(|x| x.path == e.path) {
+                    skipped += 1;
+                } else {
+                    pl.entries.push(e);
+                    added += 1;
+                }
+            }
+        }
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(AddToPlaylistReport {
+            added,
+            skipped,
+            playlists: lib.playlists.clone(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn remove_playlist_entry(
+    playlist_id: String,
+    index: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<model::Playlist>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let pl = lib
             .playlists
             .iter_mut()
             .find(|p| p.id == playlist_id)
             .ok_or("播放列表不存在")?;
-        for e in resolved {
-            if pl.entries.iter().any(|x| x.path == e.path) {
-                skipped += 1;
-            } else {
-                pl.entries.push(e);
-                added += 1;
-            }
+        if index < pl.entries.len() {
+            pl.entries.remove(index);
         }
-    }
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(AddToPlaylistReport {
-        added,
-        skipped,
-        playlists: lib.playlists.clone(),
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(lib.playlists.clone())
     })
-}
-
-#[tauri::command]
-fn remove_playlist_entry(
-    playlist_id: String,
-    index: usize,
-    state: State<AppState>,
-) -> Result<Vec<model::Playlist>, String> {
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    let pl = lib
-        .playlists
-        .iter_mut()
-        .find(|p| p.id == playlist_id)
-        .ok_or("播放列表不存在")?;
-    if index < pl.entries.len() {
-        pl.entries.remove(index);
-    }
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(lib.playlists.clone())
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 调整曲目顺序:把 from 位置的条目移动到 to 位置
 #[tauri::command]
-fn move_playlist_entry(
+async fn move_playlist_entry(
     playlist_id: String,
     from: usize,
     to: usize,
-    state: State<AppState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<model::Playlist>, String> {
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    let pl = lib
-        .playlists
-        .iter_mut()
-        .find(|p| p.id == playlist_id)
-        .ok_or("播放列表不存在")?;
-    let n = pl.entries.len();
-    if from >= n || to >= n || from == to {
-        return Ok(lib.playlists.clone());
-    }
-    let e = pl.entries.remove(from);
-    pl.entries.insert(to, e);
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(lib.playlists.clone())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        let pl = lib
+            .playlists
+            .iter_mut()
+            .find(|p| p.id == playlist_id)
+            .ok_or("播放列表不存在")?;
+        let n = pl.entries.len();
+        if from >= n || to >= n || from == to {
+            return Ok(lib.playlists.clone());
+        }
+        let e = pl.entries.remove(from);
+        pl.entries.insert(to, e);
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(lib.playlists.clone())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ===== TMCL 播放列表包(.tmcl = 标准 7z:音乐源文件 + 歌词 + 封面 + playlist.json) =====
@@ -3938,7 +3980,9 @@ fn set_autostart(enable: bool) -> Result<(), String> {
 // ===== 听歌统计(仅本机,零联网):采集在前端,这里只做合并与原子落盘 =====
 
 /// 冲刷一批增量:每曲收听秒数 + 播放次数 + 当日总时长。
-/// 合并在内存锁内完成(微秒级),落盘放 blocking 线程
+/// 合并在内存锁内完成(微秒级),落盘放 blocking 线程并做节流:
+/// 播放中每 20s 冲一次内存,若每次都全量重写 stats.json,历史越大写放大越重,
+/// 磁盘写入压到最低 2 分钟一次;force(隐藏/退出/关开关)与进程退出路径不受限
 #[tauri::command]
 async fn stats_add(
     state: State<'_, AppState>,
@@ -3946,17 +3990,26 @@ async fn stats_add(
     plays: Vec<String>,
     day: String,
     day_sec: f64,
+    force: Option<bool>,
 ) -> Result<(), String> {
     let path = state.data_dir.join(stats::STATS_FILE);
-    let snapshot = {
+    let (snapshot, due) = {
         let mut s = state.stats.lock().map_err(|_| "统计锁中毒")?;
         s.merge(&samples, &plays, &day, day_sec, stats::now_secs());
-        s.clone()
+        let now = stats::now_secs();
+        let due = force.unwrap_or(false)
+            || now.saturating_sub(STATS_LAST_SAVE.load(Ordering::Relaxed)) >= 120;
+        (s.clone(), due)
     };
+    if !due {
+        return Ok(());
+    }
     tauri::async_runtime::spawn_blocking(move || snapshot.save(&path))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    STATS_LAST_SAVE.store(stats::now_secs(), Ordering::Relaxed);
+    Ok(())
 }
 
 /// 全量读取(统计页打开时拉一次)
@@ -4022,42 +4075,53 @@ fn get_library(state: State<AppState>) -> Result<InvokeResponseBody, String> {
 }
 
 #[tauri::command]
-fn add_folder(path: String, app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    if !Path::new(&path).is_dir() {
-        return Err("该路径不是一个文件夹".into());
-    }
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    if lib.folders.iter().any(|f| f == &path) {
-        return Ok(());
-    }
-    // 嵌套或大小写变体的重复登记会让同一文件被扫成两条曲目:
-    // 组件级双向包含判定(F:\music 与 F:\music\flac、F:\Music 与 f:\music 都算重叠)
-    if let Some(f) = lib
-        .folders
-        .iter()
-        .find(|f| is_under(&path, f) || is_under(f, &path))
-    {
-        return Err(format!("该文件夹与已登记的「{f}」重叠,无需重复添加"));
-    }
-    lib.folders.push(path);
-    if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
-        lib.folders.pop();
-        return Err(e.to_string());
-    }
-    // 新登记的文件夹要同步进 asset 协议放行名单,否则封面/音频加载不出来
-    refresh_asset_scope(&app);
-    Ok(())
+async fn add_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    // 落盘与 asset 范围刷新都不该占主线程(同步命令跑主线程会卡 UI 帧)
+    tauri::async_runtime::spawn_blocking(move || {
+        if !Path::new(&path).is_dir() {
+            return Err("该路径不是一个文件夹".into());
+        }
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        if lib.folders.iter().any(|f| f == &path) {
+            return Ok(());
+        }
+        // 嵌套或大小写变体的重复登记会让同一文件被扫成两条曲目:
+        // 组件级双向包含判定(F:\music 与 F:\music\flac、F:\Music 与 f:\music 都算重叠)
+        if let Some(f) = lib
+            .folders
+            .iter()
+            .find(|f| is_under(&path, f) || is_under(f, &path))
+        {
+            return Err(format!("该文件夹与已登记的「{f}」重叠,无需重复添加"));
+        }
+        lib.folders.push(path);
+        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
+            lib.folders.pop();
+            return Err(e.to_string());
+        }
+        // 新登记的文件夹要同步进 asset 协议放行名单,否则封面/音频加载不出来
+        refresh_asset_scope(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn remove_folder(path: String, state: State<AppState>) -> Result<(), String> {
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-    lib.folders.retain(|f| f != &path);
-    // 组件级前缀匹配:字符串 starts_with 会把 F:\music2 误当成 F:\music 的子目录
-    lib.tracks.retain(|t| !is_under(&t.path, &path));
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())?;
-    Ok(())
+async fn remove_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        lib.folders.retain(|f| f != &path);
+        // 组件级前缀匹配:字符串 starts_with 会把 F:\music2 误当成 F:\music 的子目录
+        lib.tracks.retain(|t| !is_under(&t.path, &path));
+        lib.save(&state.data_dir.join(LIBRARY_FILE))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -4221,7 +4285,17 @@ pub fn run() {
             let sys_handle = handle.clone();
             handle.listen("media://sys", move |event| {
                 match event.payload().trim_matches('"') {
-                    "quit" => sys_handle.exit(0),
+                    "quit" => {
+                        // 真正退出前把内存里的统计增量落盘:落盘节流期间
+                        // 磁盘副本可能落后内存最多 2 分钟,kill 掉就永久丢了
+                        let state = sys_handle.state::<AppState>();
+                        if let Ok(s) = state.stats.lock() {
+                            if let Err(e) = s.save(&state.data_dir.join(stats::STATS_FILE)) {
+                                eprintln!("[stats] 退出前落盘失败: {e}");
+                            }
+                        }
+                        sys_handle.exit(0)
+                    }
                     "show" => crate::show_main(&sys_handle),
                     _ => {}
                 }

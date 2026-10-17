@@ -242,12 +242,19 @@ html.dark.glass body {
   inset: 0;
   overflow: hidden;
   z-index: 0;
+}
+/* 兜底渐变挂超尺寸 ::before:background-position 动画不走合成器,
+   玻璃皮肤下会全程每帧重绘整窗;transform 位移由合成线程接管,常驻成本归零。
+   inset 预留 12% 出血,±3% 位移不会露出边缘 */
+.ambient::before {
+  content: "";
+  position: absolute;
+  inset: -12%;
   background: linear-gradient(165deg, #f1f1f5 0%, #e0e1e7 48%, #d5d6de 100%);
-  background-size: 180% 180%;
   animation: ambient-fallback 26s ease-in-out infinite alternate;
 }
 
-html.dark .ambient {
+html.dark .ambient::before {
   /* 深色兜底背景必须压到"墨"级:这里灰半档,整个应用的黑色就不正
      (网易云式深黑的教训:底部 #0e0e10,顶部也只留一丝呼吸的亮) */
   background: linear-gradient(165deg, #1c1c1f 0%, #141416 52%, #0e0e10 100%);
@@ -255,11 +262,11 @@ html.dark .ambient {
 
 @keyframes ambient-fallback {
   from {
-    background-position: 0% 0%;
+    transform: translate(-3%, -3%);
   }
 
   to {
-    background-position: 100% 100%;
+    transform: translate(3%, 3%);
   }
 }
 

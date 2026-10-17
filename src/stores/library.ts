@@ -571,8 +571,10 @@ export async function exportTracksTmc(
   label?: string,
 ): Promise<void> {
   if (ids.length === 0) return;
+  // ids 用 Set 比对:数组 includes 是 O(m),全选大曲库导出时是 n×m 级全表扫描
+  const idSet = new Set(ids);
   const items = tracks
-    .filter((t) => ids.includes(t.id))
+    .filter((t) => idSet.has(t.id))
     .map((t) => ({ id: t.id, name: `${t.title} - ${t.artist}` }));
   if (items.length === 0) return;
   const text = label || (items.length > 1 ? `已选 ${items.length} 首` : "");

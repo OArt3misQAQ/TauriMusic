@@ -180,13 +180,28 @@ export interface StatsData {
   tracks: Record<string, TrackStat>;
 }
 
+/** 同一首歌的歌词请求去重:切歌时播放页与 SMTC 桥会各拉一次,
+ *  后端每次都要重新探测音频文件读盘——同 id 共享同一 Promise 只打一遍 */
+let lyricsInFlight: { id: string; payload: Promise<LyricsPayload | null> } | null = null;
+
+function getLyricsDedup(id: string): Promise<LyricsPayload | null> {
+  if (lyricsInFlight?.id === id) return lyricsInFlight.payload;
+  const p = invoke<LyricsPayload | null>("get_lyrics", { id });
+  lyricsInFlight = { id, payload: p };
+  // 失败不缓存:清掉记录让下次重新请求(p 本身的 reject 照常传给调用方)
+  p.catch(() => {
+    if (lyricsInFlight?.payload === p) lyricsInFlight = null;
+  });
+  return p;
+}
+
 export const api = {
   getLibrary: () => invoke<Library>("get_library"),
   pickFolder: () => invoke<string | null>("pick_music_folder"),
   addFolder: (path: string) => invoke<void>("add_folder", { path }),
   removeFolder: (path: string) => invoke<void>("remove_folder", { path }),
   scan: () => invoke<ScanWithLibrary>("scan_library"),
-  getLyrics: (id: string) => invoke<LyricsPayload | null>("get_lyrics", { id }),
+  getLyrics: getLyricsDedup,
   getImportDir: () => invoke<string>("get_import_dir"),
   openImportDir: () => invoke<string>("open_import_dir"),
   importPaths: (paths: string[]) => invoke<ImportReport>("import_paths", { paths }),
@@ -211,8 +226,14 @@ export const api = {
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enable: boolean) => invoke<void>("set_autostart", { enable }),
   getStats: () => invoke<StatsData>("stats_get"),
-  statsAdd: (samples: Record<string, number>, plays: string[], day: string, daySec: number) =>
-    invoke<void>("stats_add", { samples, plays, day, daySec }),
+  /** force=true 跳过后端落盘节流立即写盘(隐藏到托盘/退出前/关统计开关时用) */
+  statsAdd: (
+    samples: Record<string, number>,
+    plays: string[],
+    day: string,
+    daySec: number,
+    force = false,
+  ) => invoke<void>("stats_add", { samples, plays, day, daySec, force }),
   statsClear: () => invoke<void>("stats_clear"),
   /** 系统媒体控制(SMTC)与托盘菜单的状态推送 */
   smtcSetTrack: (title: string, artist: string, cover: string | null, duration: number) =>
