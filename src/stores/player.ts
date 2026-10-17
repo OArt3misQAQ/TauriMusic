@@ -164,6 +164,9 @@ function takeShuffleIndex(n: number, current: number): number {
 function ensureAudio(): HTMLAudioElement {
   if (audio) return audio;
   audio = new Audio();
+  // preload=metadata:默认 auto 会把本地文件尽量读进渲染进程的媒体缓冲,
+  // 高解析 FLAC 一首几十 MB;流式播放本就边播边读,预缓冲纯浪费内存
+  audio.preload = "metadata";
   audio.volume = Math.min(1, Math.max(0, player.volume));
 
   // 进度采集用 timeupdate 事件:后台媒体任务不受页面可见性节流,

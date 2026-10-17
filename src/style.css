@@ -295,6 +295,15 @@ html.dark .ambient-img {
   }
 }
 
+/* 窗口失焦/最小化(App.vue initAmbientIdle 挂 .anim-idle)冻结环境层动画:
+   玻璃卡的 backdrop-filter 会逐帧重新采样 backdrop,ambient 的常驻位移是
+   唯一的持续变化源——软件光栅下逐帧重绘的临时纹理把渲染进程内存推到
+   高水位不回落;无人观看时暂停,持续 churn 归零 */
+.anim-idle .ambient-img,
+.anim-idle .ambient::before {
+  animation-play-state: paused;
+}
+
 .amb-enter-active {
   transition: opacity 1.6s var(--ease-out-soft);
 }
