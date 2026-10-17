@@ -4704,7 +4704,9 @@ mod tests {
 
     #[test]
     fn import_rejects_duplicate_content() {
-        let dir = std::env::temp_dir().join(format!("tm-import-{}", std::process::id()));
+        // 前缀必须与其他测试唯一:测试并行跑在同一进程,process::id 相同,
+        // 共用目录会被另一测试的 remove_dir_all 连根删掉,fs::write 直接 NotFound
+        let dir = std::env::temp_dir().join(format!("tm-import-dup-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let imp = dir.join("imp");
         fs::create_dir_all(&imp).unwrap();
