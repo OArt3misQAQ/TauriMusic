@@ -181,17 +181,20 @@ export interface StatsData {
 }
 
 /** 同一首歌的歌词请求去重:切歌时播放页与 SMTC 桥会各拉一次,
- *  后端每次都要重新探测音频文件读盘——同 id 共享同一 Promise 只打一遍 */
+ *  后端每次都要重新探测音频文件读盘——同 id 共享同一 Promise 只打一遍。
+ *  请求落定后即清除缓存:在线补译等操作会更新歌词文件,陈旧缓存会让
+ *  「不切歌重开播放页」永远拿到补译前的旧词 */
 let lyricsInFlight: { id: string; payload: Promise<LyricsPayload | null> } | null = null;
 
 function getLyricsDedup(id: string): Promise<LyricsPayload | null> {
   if (lyricsInFlight?.id === id) return lyricsInFlight.payload;
   const p = invoke<LyricsPayload | null>("get_lyrics", { id });
   lyricsInFlight = { id, payload: p };
-  // 失败不缓存:清掉记录让下次重新请求(p 本身的 reject 照常传给调用方)
-  p.catch(() => {
+  // 落定(成功或失败)即作废:成功结果不再复用,避免盖掉之后的歌词文件更新
+  const clear = () => {
     if (lyricsInFlight?.payload === p) lyricsInFlight = null;
-  });
+  };
+  p.then(clear, clear);
   return p;
 }
 
