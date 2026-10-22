@@ -4,7 +4,18 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "src-tauri/**", "node_modules/**", "scripts/**", "TauriMusic-promo/**"] },
+  {
+    // html/ 与 web/ 为本地宣传页源码,已 gitignore,不参与仓库 lint
+    ignores: [
+      "dist/**",
+      "src-tauri/**",
+      "node_modules/**",
+      "scripts/**",
+      "TauriMusic-promo/**",
+      "html/**",
+      "web/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs["flat/recommended"],
