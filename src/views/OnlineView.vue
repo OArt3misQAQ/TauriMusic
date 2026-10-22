@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { api, onlineToTrack, type OnlineTrack } from "../api";
+import { api, onlineToTrack, type OnlineSource, type OnlineTrack } from "../api";
 import { flash, fmtTime, playTrack } from "../stores/player";
 
 /** 搜索状态机:idle 无结果 / loading 请求中 / done 有结果或空 / err 失败 */
@@ -12,6 +12,24 @@ const keyword = ref("");
 const lastPage = ref(-1);
 const results = ref<OnlineTrack[]>([]);
 
+const SOURCES: { id: OnlineSource; label: string }[] = [
+  { id: "netease", label: "网易云" },
+  { id: "qq", label: "QQ 音乐" },
+  { id: "kugou", label: "酷狗音乐" },
+  { id: "kuwo", label: "酷我音乐" },
+];
+const source = ref<OnlineSource>("netease");
+
+/** 切来源:清空结果,避免把 A 平台的曲目混进 B 平台队列 */
+function selectSource(s: OnlineSource): void {
+  if (source.value === s) return;
+  source.value = s;
+  phase.value = "idle";
+  errMsg.value = "";
+  results.value = [];
+  lastPage.value = -1;
+}
+
 /** fee 语义与后端 online.rs 对齐:0/8 可免费播放,其余为 VIP/付费/受限 */
 function playable(t: OnlineTrack): boolean {
   return t.fee === 0 || t.fee === 8;
@@ -20,16 +38,20 @@ function playable(t: OnlineTrack): boolean {
 async function search(): Promise<void> {
   const kw = keyword.value.trim();
   if (!kw || phase.value === "loading") return;
+  const src = source.value;
   phase.value = "loading";
   errMsg.value = "";
   results.value = [];
   lastPage.value = -1;
   try {
-    const list = await api.onlineSearch(kw, 0);
+    const list = await api.onlineSearch(src, kw, 0);
+    // 请求期间切了来源:丢弃旧响应,不能把结果写进新来源的列表
+    if (source.value !== src) return;
     results.value = list;
     lastPage.value = 0;
     phase.value = "done";
   } catch (e) {
+    if (source.value !== src) return;
     phase.value = "err";
     errMsg.value = e instanceof Error ? e.message : String(e);
   }
@@ -39,17 +61,20 @@ async function search(): Promise<void> {
 async function loadMore(): Promise<void> {
   const kw = keyword.value.trim();
   if (!kw || lastPage.value < 0 || phase.value === "loading") return;
+  const src = source.value;
   const prev = phase.value;
   phase.value = "loading";
   try {
-    const list = await api.onlineSearch(kw, lastPage.value + 1);
+    const list = await api.onlineSearch(src, kw, lastPage.value + 1);
+    if (source.value !== src) return;
     lastPage.value += 1;
-    // 网易云不足一页即到末页;空页也视为没有更多
+    // 不足一页即到末页;空页也视为没有更多
     if (list.length < 30) lastPage.value = -1;
     const seen = new Set(results.value.map((t) => t.id));
     for (const t of list) if (!seen.has(t.id)) results.value.push(t);
     phase.value = prev;
   } catch (e) {
+    if (source.value !== src) return;
     flash(e instanceof Error ? e.message : String(e));
     phase.value = "done";
   }
@@ -58,7 +83,8 @@ async function loadMore(): Promise<void> {
 /** 点击结果:免费曲目入队播放;VIP/受限给即时反馈 */
 function play(t: OnlineTrack): void {
   if (!playable(t)) {
-    flash(t.fee === 1 ? "VIP 曲目,需要网易云会员" : "该曲目需购买或暂无版权");
+    const label = SOURCES.find((s) => s.id === t.source)?.label ?? "该平台";
+    flash(t.fee === 1 ? `VIP 曲目,需要${label}会员` : "该曲目需购买或暂无版权");
     return;
   }
   playTrack(
@@ -72,7 +98,21 @@ function play(t: OnlineTrack): void {
   <div class="view">
     <div class="ov-head">
       <h1>在线音乐</h1>
-      <p class="sub">搜索并试听网易云免费曲目 · 仅供试听,支持正版</p>
+      <p class="sub">搜索并试听各平台免费曲目 · 仅供试听,支持正版</p>
+      <div class="sources" role="tablist" aria-label="在线音源">
+        <button
+          v-for="s in SOURCES"
+          :key="s.id"
+          type="button"
+          role="tab"
+          :aria-selected="source === s.id"
+          class="src"
+          :class="{ on: source === s.id }"
+          @click="selectSource(s.id)"
+        >
+          {{ s.label }}
+        </button>
+      </div>
       <form class="ov-search" @submit.prevent="search">
         <svg class="s-ico" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
@@ -141,6 +181,33 @@ function play(t: OnlineTrack): void {
   font-size: 12px;
   color: var(--text-3);
   margin-top: 3px;
+}
+.sources {
+  display: flex;
+  gap: 4px;
+  margin-top: 12px;
+}
+.src {
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  border: 1px solid var(--hairline);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
+}
+.src:hover {
+  color: var(--text);
+}
+.src.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 .ov-search {
   margin-top: 14px;

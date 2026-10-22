@@ -1,6 +1,6 @@
 import { computed, reactive, shallowReactive } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { api, type Track } from "../api";
+import { api, type OnlineSource, type Track } from "../api";
 import { StorageKeys, storageGetString, storageSet } from "./storage";
 
 /** 播放模式:互斥单选,一键循环切换 */
@@ -203,8 +203,8 @@ function load(track: Track): void {
   const a = ensureAudio();
   player.position = 0;
   player.duration = track.duration || 0;
-  if (track.online && track.onlineId) {
-    void loadOnline(track, track.onlineId, a);
+  if (track.online && track.onlineId && track.onlineSource) {
+    void loadOnline(track, track.onlineSource, track.onlineId, a);
     return;
   }
   a.src = convertFileSrc(track.path);
@@ -217,7 +217,12 @@ let loadSeq = 0;
 
 /** 在线曲目加载:懒取直链(进播放队列时不请求,真正 load 时才取,避免链接过期)。
  *  取到的直链缓存回 track.onlineUrl,同一首歌切回来不再二次请求 */
-async function loadOnline(track: Track, onlineId: string, a: HTMLAudioElement): Promise<void> {
+async function loadOnline(
+  track: Track,
+  onlineSource: OnlineSource,
+  onlineId: string,
+  a: HTMLAudioElement,
+): Promise<void> {
   const seq = ++loadSeq;
   // 封面与取链并行懒取,互不阻塞出声
   void ensureOnlineCover(track);
@@ -232,7 +237,7 @@ async function loadOnline(track: Track, onlineId: string, a: HTMLAudioElement): 
     return;
   }
   try {
-    const url = await api.onlinePlayUrl(onlineId);
+    const url = await api.onlinePlayUrl(onlineSource, onlineId);
     if (seq !== loadSeq) return;
     track.onlineUrl = url;
     a.src = url;
@@ -264,9 +269,21 @@ export function coverPathOf(t: Track | null | undefined): string | null {
 /** 在线曲目封面懒取:开播时拉一次,Rust 端落盘到应用封面缓存后返回本地路径。
  *  失败静默(无图/网络错误都保持 ♪ 占位),同一首不重复请求 */
 async function ensureOnlineCover(track: Track): Promise<void> {
-  if (!track.onlineId || track.cover || onlineCovers.has(track.id)) return;
+  // 酷我搜索接口不提供封面,不必每次开播都空跑一次 IPC
+  if (
+    !track.onlineSource ||
+    track.onlineSource === "kuwo" ||
+    !track.onlineId ||
+    track.cover ||
+    onlineCovers.has(track.id)
+  )
+    return;
   try {
-    const p = await api.onlineCover(track.onlineId);
+    const p = await api.onlineCover(
+      track.onlineSource,
+      track.onlineId,
+      track.onlineCover ?? null,
+    );
     if (p) onlineCovers.set(track.id, p);
   } catch {
     /* 无图或网络失败:占位符兜底,下次播放会再试 */

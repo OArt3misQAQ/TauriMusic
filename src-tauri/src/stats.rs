@@ -43,7 +43,7 @@ pub struct StatsData {
     pub version: u32,
     /// 本地日期(YYYY-MM-DD)→ 当日收听秒数(本地+在线总和,向后兼容)
     pub days: BTreeMap<String, f64>,
-    /// Track.id(本地为路径 hash,在线为 `net:` 前缀)→ 单曲统计
+    /// Track.id(本地为路径 hash;在线为 net:/qq:/kugou:/kuwo: 前缀)→ 单曲统计
     pub tracks: BTreeMap<String, TrackStat>,
     /// 本地日期 → 本地曲目当日秒数
     pub days_local: BTreeMap<String, f64>,
@@ -144,7 +144,7 @@ impl StatsData {
             let s = self.tracks.entry(id.clone()).or_default();
             s.sec += sec;
             s.last = s.last.max(now);
-            if id.starts_with("net:") {
+            if crate::online::is_online_id(id) {
                 online_sec += sec;
             } else {
                 local_sec += sec;
@@ -157,7 +157,7 @@ impl StatsData {
         }
         // 只接受在线曲目元数据,避免前端误传本地 id 污染在线榜单
         for (id, meta) in online_meta {
-            if id.starts_with("net:") {
+            if crate::online::is_online_id(id) {
                 self.online_meta.insert(id.clone(), meta.clone());
             }
         }
@@ -289,10 +289,11 @@ mod tests {
         let mut samples = HashMap::new();
         samples.insert("local-hash".to_string(), 30.0);
         samples.insert("net:123".to_string(), 12.0);
-        s.merge(&samples, &[], "2026-10-23", 42.0, &HashMap::new(), 1000);
-        assert!((s.days["2026-10-23"] - 42.0).abs() < 1e-9);
+        samples.insert("qq:001yS0N33yPm1B".to_string(), 6.0);
+        s.merge(&samples, &[], "2026-10-23", 48.0, &HashMap::new(), 1000);
+        assert!((s.days["2026-10-23"] - 48.0).abs() < 1e-9);
         assert!((s.days_local["2026-10-23"] - 30.0).abs() < 1e-9);
-        assert!((s.days_online["2026-10-23"] - 12.0).abs() < 1e-9);
+        assert!((s.days_online["2026-10-23"] - 18.0).abs() < 1e-9);
     }
 
     #[test]
@@ -308,10 +309,12 @@ mod tests {
                 album: "专辑".into(),
             },
         );
-        // 本地 id 即使误传元数据也不能进在线榜单
+        // 其他在线来源同样接受;本地 id 即使误传元数据也不能进在线榜单
+        meta.insert("qq:001yS0N33yPm1B".to_string(), OnlineTrackMeta::default());
         meta.insert("local-hash".to_string(), OnlineTrackMeta::default());
         s.merge(&HashMap::new(), &[], "2026-10-23", 0.0, &meta, 1000);
         assert_eq!(s.online_meta["net:123"].title, "在线曲");
+        assert!(s.online_meta.contains_key("qq:001yS0N33yPm1B"));
         assert!(!s.online_meta.contains_key("local-hash"));
     }
 

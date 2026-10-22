@@ -1689,24 +1689,29 @@ async fn netease_enrich_album(
         .map_err(|e| e.to_string())?
 }
 
-/// 在线搜索网易云曲目(仅免费曲目可播,详见 online.rs 的合规边界)
+/// 在线搜索(按来源分发;仅免费曲目可播,详见 online.rs 的合规边界)
 #[tauri::command]
-async fn online_search(keyword: String, page: u32) -> Result<Vec<online::OnlineTrack>, String> {
-    tauri::async_runtime::spawn_blocking(move || online::search_netease(&keyword, page))
+async fn online_search(
+    source: String,
+    keyword: String,
+    page: u32,
+) -> Result<Vec<online::OnlineTrack>, String> {
+    tauri::async_runtime::spawn_blocking(move || online::search(&source, &keyword, page))
         .await
         .map_err(|e| e.to_string())?
 }
 
 /// 取在线曲目播放直链(VIP/版权受限曲目报错)
 #[tauri::command]
-async fn online_play_url(id: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || online::play_url_netease(&id))
+async fn online_play_url(source: String, id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || online::play_url(&source, &id))
         .await
         .map_err(|e| e.to_string())?
 }
 
 /// 在线封面专用客户端:禁止跟随重定向。直链已通过域名白名单,
-/// 但 30x 仍可能把请求带到白名单外/内网地址,图片抓取不接受跳转
+/// 但 30x 仍可能把请求带到白名单外/内网地址,图片抓取不接受跳转。
+/// 不携带任何平台的 Cookie/Referer——跨平台拉图时不能把网易云凭据发给别家
 fn online_cover_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
@@ -1715,16 +1720,6 @@ fn online_cover_client() -> reqwest::blocking::Client {
                 .user_agent(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                 )
-                .default_headers(reqwest::header::HeaderMap::from_iter([
-                    (
-                        reqwest::header::REFERER,
-                        "https://music.163.com".parse().unwrap(),
-                    ),
-                    (
-                        reqwest::header::COOKIE,
-                        "os=pc; appver=2.9.7".parse().unwrap(),
-                    ),
-                ]))
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
@@ -1733,22 +1728,48 @@ fn online_cover_client() -> reqwest::blocking::Client {
         .clone()
 }
 
-/// 在线曲目封面落盘:取专辑图直链,存到封面缓存 covers/online/{id}.jpg,
+/// 在线曲目封面落盘:取专辑图直链,存到封面缓存 covers/online/,
 /// 返回本地路径(前端经 asset 协议渲染,与本地封面同一套链路)。
 /// 缓存命中直接回;None = 无图;网络失败按 Err 透传
-fn ensure_online_cover(id: &str, app: &tauri::AppHandle) -> Result<Option<String>, String> {
-    // id 会直接拼进缓存文件名,先挡住路径穿越;数字校验与 API 查询共用一处
-    online::validate_id(id)?;
+fn ensure_online_cover(
+    source: &str,
+    id: &str,
+    cover_url: Option<&str>,
+    app: &tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    // id 会直接拼进缓存文件名,先挡住路径穿越;各来源的 id 形状在 online.rs 统一校验
+    online::validate_id(source, id)?;
     let dir = app
         .state::<AppState>()
         .cache_dir
         .join("covers")
         .join("online");
-    let dest = dir.join(format!("{id}.jpg"));
+    // 网易云沿用旧文件名,避免已有缓存失效;其他来源加前缀隔离,防 hash/id 撞名
+    let file = if source == "netease" {
+        format!("{id}.jpg")
+    } else {
+        format!("{source}_{id}.jpg")
+    };
+    let dest = dir.join(file);
     if dest.is_file() {
         return Ok(Some(dest.to_string_lossy().into_owned()));
     }
-    let Some(url) = online::cover_url_netease(id)? else {
+    let url = match source {
+        "netease" => online::cover_url_netease(id)?,
+        // QQ/酷狗封面直链来自搜索结果;主机白名单在 Rust 端再校验一次
+        "qq" | "kugou" => {
+            let Some(raw) = cover_url else {
+                return Ok(None);
+            };
+            match online::validate_cover_url(source, raw) {
+                Ok(u) => Some(u),
+                Err(_) => return Ok(None),
+            }
+        }
+        // 酷我搜索接口不提供封面字段,首版保持占位
+        _ => None,
+    };
+    let Some(url) = url else {
         return Ok(None);
     };
     // fetch_capped_allow_http 自带 20MiB 上限与 http→https 回退;图即 jpg,原样落盘。
@@ -1767,13 +1788,20 @@ fn ensure_online_cover(id: &str, app: &tauri::AppHandle) -> Result<Option<String
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
-/// 在线曲目封面(网易云专辑图):落盘封面缓存后返回本地路径。
+/// 在线曲目封面:落盘封面缓存后返回本地路径。
 /// None = 该曲无图;前端把路径当本地封面渲染,播放页/氛围背景/托盘/SMTC 全部复用
 #[tauri::command]
-async fn online_cover(id: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || ensure_online_cover(&id, &app))
-        .await
-        .map_err(|e| e.to_string())?
+async fn online_cover(
+    source: String,
+    id: String,
+    cover_url: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_online_cover(&source, &id, cover_url.as_deref(), &app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn netease_enrich_blocking(
@@ -4252,8 +4280,8 @@ async fn scan_library(app: tauri::AppHandle) -> Result<ScanWithLibrary, String> 
     .map_err(|e| e.to_string())?
 }
 
-/// 在线歌词进程内缓存:切歌往返不再重复请求网易云;
-/// 键为 netease id,None 表示该歌确实无词(同样缓存,避免反复打接口)。
+/// 在线歌词进程内缓存:切歌往返不再重复请求平台;
+/// 键为完整在线 id(含来源前缀),None 表示该歌确实无词(同样缓存,避免反复打接口)。
 /// 容量超限整体清空——歌词载荷很小,重建缓存只是几次轻量请求
 static ONLINE_LYRIC_CACHE: std::sync::OnceLock<
     Mutex<HashMap<String, Option<lyrics::LyricsPayload>>>,
@@ -4262,20 +4290,21 @@ const ONLINE_LYRIC_CACHE_CAP: usize = 128;
 
 #[tauri::command]
 async fn get_lyrics(id: String, app: tauri::AppHandle) -> Option<lyrics::LyricsPayload> {
-    // 在线曲目:网易云公开歌词接口,进程内缓存命中即回
-    if let Some(netease_id) = id.strip_prefix("net:") {
+    // 在线曲目:按来源前缀分发到各家公开歌词接口,进程内缓存命中即回
+    if let Some((source, platform_id)) = online::split_online_id(&id) {
         // get_or_init 保证静态真的被初始化(纯 get() 在首拍永远是 None)
         let cache = ONLINE_LYRIC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(g) = cache.lock() {
-            if let Some(hit) = g.get(netease_id) {
+            if let Some(hit) = g.get(&id) {
                 return hit.clone();
             }
         }
-        let nid = netease_id.to_string();
+        let src = source.to_string();
+        let pid = platform_id.to_string();
         // 外层 Option=请求是否成功(失败不缓存,下次切回可重试);
         // 内层 None=该歌确实无词,同样落缓存,避免反复打接口
         let fetched: Option<Option<lyrics::LyricsPayload>> =
-            match tauri::async_runtime::spawn_blocking(move || online::lyric_payload_netease(&nid))
+            match tauri::async_runtime::spawn_blocking(move || online::lyric_payload(&src, &pid))
                 .await
             {
                 Ok(Ok(payload)) => Some(payload),
@@ -4286,7 +4315,7 @@ async fn get_lyrics(id: String, app: tauri::AppHandle) -> Option<lyrics::LyricsP
                 if g.len() >= ONLINE_LYRIC_CACHE_CAP {
                     g.clear();
                 }
-                g.insert(netease_id.to_string(), payload.clone());
+                g.insert(id.clone(), payload.clone());
             }
         }
         return fetched.flatten();

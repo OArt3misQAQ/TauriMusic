@@ -26,21 +26,44 @@ export interface Track {
   /** ===== 以下为在线曲目专用字段(本地曲目恒为 undefined) ===== */
   /** 在线音源标记:播放时 src 走在线直链而非本地文件 */
   online?: boolean;
-  /** 平台曲目 id(网易云),播放前据此取直链 */
+  /** 在线来源:netease / qq / kugou / kuwo */
+  onlineSource?: OnlineSource;
+  /** 平台曲目 id,播放前据此取直链 */
   onlineId?: string;
   /** 已取到的播放直链(懒取,进队列时才请求) */
   onlineUrl?: string;
+  /** 搜索接口给出的远程封面直链(QQ/酷狗),Rust 端落盘后返回本地路径 */
+  onlineCover?: string;
 }
 
-/** 在线搜索结果(网易云公开接口) */
+/** 在线音源标识 */
+export type OnlineSource = "netease" | "qq" | "kugou" | "kuwo";
+
+/** 在线曲目 id 前缀:网易云沿用历史 net:,其余用来源名 */
+const ONLINE_PREFIXES: Record<OnlineSource, string> = {
+  netease: "net:",
+  qq: "qq:",
+  kugou: "kugou:",
+  kuwo: "kuwo:",
+};
+
+/** 在线曲目 id 判定:统计分域与本地路径 hash 共用同一套前缀规则 */
+export function isOnlineId(id: string): boolean {
+  return Object.values(ONLINE_PREFIXES).some((p) => id.startsWith(p));
+}
+
+/** 在线搜索结果(各平台公开接口) */
 export interface OnlineTrack {
   id: string;
   name: string;
   artist: string;
   album: string;
   duration: number;
-  /** 0/8=可免费播放 1=VIP 4=需购买专辑 */
+  /** 0/8=可免费播放 1=VIP/付费 */
   fee: number;
+  source: OnlineSource;
+  /** 搜索接口直接给出的封面直链(网易云/酷我为空,走各自详情或占位) */
+  cover: string | null;
 }
 
 /** 在线曲目元数据:在线曲目不在曲库,统计页需要随冲刷落盘才能显示榜单 */
@@ -302,20 +325,22 @@ export const api = {
   showLyricsWindow: () => invoke<void>("show_lyrics_window"),
   hideLyricsWindow: () => invoke<void>("hide_lyrics_window"),
   getResourceUsage: () => invoke<ResourceUsage>("get_resource_usage"),
-  /** 在线搜索(网易云公开接口;免费曲目可直接播放) */
-  onlineSearch: (keyword: string, page: number) =>
-    invoke<OnlineTrack[]>("online_search", { keyword, page }),
+  /** 在线搜索(按来源分发;免费曲目可直接播放) */
+  onlineSearch: (source: OnlineSource, keyword: string, page: number) =>
+    invoke<OnlineTrack[]>("online_search", { source, keyword, page }),
   /** 在线曲目播放直链(版权/VIP 受限曲目 reject;后端已做域名白名单校验) */
-  onlinePlayUrl: (id: string) => invoke<string>("online_play_url", { id }),
+  onlinePlayUrl: (source: OnlineSource, id: string) =>
+    invoke<string>("online_play_url", { source, id }),
   /** 在线曲目封面:Rust 端落盘到封面缓存后返回本地路径(无图返回 null) */
-  onlineCover: (id: string) => invoke<string | null>("online_cover", { id }),
+  onlineCover: (source: OnlineSource, id: string, coverUrl: string | null) =>
+    invoke<string | null>("online_cover", { source, id, coverUrl }),
 };
 
-/** 在线搜索结果 → 播放队列 Track:id 加 `net:` 前缀与本地路径 hash 空间隔离,
+/** 在线搜索结果 → 播放队列 Track:id 加来源前缀与本地路径 hash 空间隔离,
  *  path 留空——播放 src 走在线直链,歌词/封面等本地探测对它一律静默落空 */
 export function onlineToTrack(t: OnlineTrack): Track {
   return {
-    id: `net:${t.id}`,
+    id: `${ONLINE_PREFIXES[t.source]}${t.id}`,
     title: t.name,
     artist: t.artist,
     album: t.album || "在线音乐",
@@ -335,6 +360,8 @@ export function onlineToTrack(t: OnlineTrack): Track {
     mtime: 0,
     size: 0,
     online: true,
+    onlineSource: t.source,
     onlineId: t.id,
+    onlineCover: t.cover ?? undefined,
   };
 }

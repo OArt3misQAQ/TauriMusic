@@ -1,6 +1,6 @@
 [package]
 name = "tauri-music"
-version = "0.6.0"
+version = "0.7.0"
 description = "Apple Music 风格的本地音乐播放器"
 authors = ["O_Art3mis"]
 edition = "2021"
@@ -28,6 +28,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 mimalloc = "0.1"
 sha2 = "0.11"
+md5 = "0.7"
+base64 = "0.22"
 sevenz-rust2 = "0.23.0"
 
 [target.'cfg(windows)'.dependencies]

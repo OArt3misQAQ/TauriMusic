@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { isOnlineId } from "../api";
 import { lib, zhCollator, trackAlbumKey } from "../stores/library";
 import { loadStats, stats, statsLoadError, todayStr } from "../stores/stats";
 
@@ -32,9 +33,9 @@ const trackMeta = computed(() => {
   return m;
 });
 
-/** 在线曲目 id 统一为 `net:` 前缀,前缀即口径分界线 */
+/** 在线曲目 id 带来源前缀(net:/qq:/kugou:/kuwo:),前缀即口径分界线 */
 function inScope(id: string): boolean {
-  return scope.value === "online" ? id.startsWith("net:") : !id.startsWith("net:");
+  return scope.value === "online" ? isOnlineId(id) : !isOnlineId(id);
 }
 
 /** 当前口径的每日时长(本地/在线分桶由后端维护) */
