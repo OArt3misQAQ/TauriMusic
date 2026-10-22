@@ -1,5 +1,5 @@
 import { ref, watch } from "vue";
-import { api, type StatsData } from "../api";
+import { api, type OnlineTrackMeta, type StatsData } from "../api";
 import { player, current } from "./player";
 import { ui } from "./ui";
 import { StorageKeys, storageGetString, storageSet } from "./storage";
@@ -40,7 +40,7 @@ export function setStatsEnabled(on: boolean): void {
 /** 清空本机全部统计数据(设置页二次确认后调用) */
 export async function clearStats(): Promise<void> {
   await api.statsClear();
-  stats.value = { version: 1, days: {}, tracks: {} };
+  stats.value = { version: 2, days: {}, tracks: {}, daysLocal: {}, daysOnline: {}, onlineMeta: {} };
 }
 
 /** 统计页打开时拉取全量数据 */
@@ -69,6 +69,8 @@ let sessionSec = 0;
 let pendingSec: Record<string, number> = {};
 let pendingPlays: string[] = [];
 let pendingDaySec = 0;
+/** 未冲刷的在线曲目元数据(在线曲目不在曲库,统计页榜单靠它渲染) */
+let pendingOnlineMeta: Record<string, OnlineTrackMeta> = {};
 
 let flushTimer = 0;
 
@@ -89,6 +91,9 @@ function beginSpanIfNeeded(): void {
   spanTrackId = t.id;
   spanStart = Date.now();
   spanDur = t.duration;
+  if (t.online && t.onlineId) {
+    pendingOnlineMeta[t.id] = { title: t.title, artist: t.artist, album: t.album };
+  }
 }
 
 /** 结束当前跨度并把秒数并入待冲刷缓冲;final=true 时按会话时长判定是否计一次播放 */
@@ -119,12 +124,14 @@ async function flush(force = false): Promise<void> {
   const samples = pendingSec;
   const plays = pendingPlays;
   const daySec = pendingDaySec;
+  const onlineMeta = pendingOnlineMeta;
   pendingSec = {};
   pendingPlays = [];
   pendingDaySec = 0;
+  pendingOnlineMeta = {};
   try {
     // force 透传给后端:定期冲刷可被落盘节流合并,隐藏/退出前的兜底冲刷必须立即落盘
-    await api.statsAdd(samples, plays, todayStr(), daySec, force);
+    await api.statsAdd(samples, plays, todayStr(), daySec, onlineMeta, force);
   } catch (err) {
     // 冲刷失败丢弃这批(不回填避免重复计),下一周期继续
     console.error("统计冲刷失败", err);

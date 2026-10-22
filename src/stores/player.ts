@@ -1,6 +1,6 @@
-import { computed, shallowReactive } from "vue";
+import { computed, reactive, shallowReactive } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { Track } from "../api";
+import { api, type Track } from "../api";
 import { StorageKeys, storageGetString, storageSet } from "./storage";
 
 /** 播放模式:互斥单选,一键循环切换 */
@@ -203,8 +203,85 @@ function load(track: Track): void {
   const a = ensureAudio();
   player.position = 0;
   player.duration = track.duration || 0;
+  if (track.online && track.onlineId) {
+    void loadOnline(track, track.onlineId, a);
+    return;
+  }
   a.src = convertFileSrc(track.path);
   void a.play().catch(() => {});
+}
+
+/** 取链竞态令牌:在线取链是异步的,返回前用户可能已切歌,
+ *  慢响应若直接写 a.src 会把新歌顶掉——序列号不符即丢弃 */
+let loadSeq = 0;
+
+/** 在线曲目加载:懒取直链(进播放队列时不请求,真正 load 时才取,避免链接过期)。
+ *  取到的直链缓存回 track.onlineUrl,同一首歌切回来不再二次请求 */
+async function loadOnline(track: Track, onlineId: string, a: HTMLAudioElement): Promise<void> {
+  const seq = ++loadSeq;
+  // 封面与取链并行懒取,互不阻塞出声
+  void ensureOnlineCover(track);
+  // 立刻停掉旧曲出声;直链没到手前保持静默,UI 处于"加载中"态
+  a.pause();
+  a.removeAttribute("src");
+  a.load();
+  if (track.onlineUrl) {
+    if (seq !== loadSeq) return;
+    a.src = track.onlineUrl;
+    void a.play().catch(() => {});
+    return;
+  }
+  try {
+    const url = await api.onlinePlayUrl(onlineId);
+    if (seq !== loadSeq) return;
+    track.onlineUrl = url;
+    a.src = url;
+    void a.play().catch(() => {});
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    // VIP/版权受限或网络失败:提示并按"坏曲目"跳下一曲,
+    // 与 audio error 走同一道 errorStreak 闸门,防全坏队列死循环
+    flash(e instanceof Error ? e.message : String(e));
+    player.playing = false;
+    if (player.queue.length > 1 && errorStreak < player.queue.length) {
+      errorStreak += 1;
+      next(false);
+    }
+  }
+}
+
+/** 在线曲目封面缓存(播放队列 id → 本地缓存路径):reactive Map,
+ *  取到即触发依赖它的 computed(播放页封面/氛围背景/SMTC)重新求值 */
+export const onlineCovers = reactive(new Map<string, string>());
+
+/** 当前曲目渲染用的封面路径:本地曲目走曲库缓存,在线曲目落在线缓存;
+ *  统一出口让播放页/氛围背景/SMTC 桥共享同一份兜底顺序 */
+export function coverPathOf(t: Track | null | undefined): string | null {
+  if (!t) return null;
+  return t.coverLarge ?? t.cover ?? onlineCovers.get(t.id) ?? null;
+}
+
+/** 在线曲目封面懒取:开播时拉一次,Rust 端落盘到应用封面缓存后返回本地路径。
+ *  失败静默(无图/网络错误都保持 ♪ 占位),同一首不重复请求 */
+async function ensureOnlineCover(track: Track): Promise<void> {
+  if (!track.onlineId || track.cover || onlineCovers.has(track.id)) return;
+  try {
+    const p = await api.onlineCover(track.onlineId);
+    if (p) onlineCovers.set(track.id, p);
+  } catch {
+    /* 无图或网络失败:占位符兜底,下次播放会再试 */
+  }
+}
+
+/** 全局提示条(播放失败等瞬时反馈):几秒后自动消失 */
+export const playerFlash = shallowReactive({ text: "", at: 0 });
+let flashTimer = 0;
+
+export function flash(text: string): void {
+  playerFlash.text = text;
+  playerFlash.at = Date.now();
+  window.clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => (playerFlash.text = ""), 3600);
 }
 
 /** 删除曲目后同步清理播放队列:修正 index,正在播的被删则清空播放器释放句柄 */

@@ -13,13 +13,14 @@ import {
   upcomingTracks,
   jumpToQueueIndex,
   removeFromQueue,
+  coverPathOf,
 } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
 
 const coverUrl = computed(() => {
-  // 全屏播放页是大图消费方,优先 512px 档;旧记录没有大图时退回小图
-  const src = current.value?.coverLarge ?? current.value?.cover;
+  // 全屏播放页是大图消费方,优先 512px 档;在线曲目经 coverPathOf 兜底到在线封面缓存
+  const src = coverPathOf(current.value);
   return src ? convertFileSrc(src) : null;
 });
 const bgStyle = computed(() => ({

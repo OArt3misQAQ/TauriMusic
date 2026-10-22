@@ -145,7 +145,7 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
         <div class="group">
           <button class="opt" @click="setStatsEnabled(!statsEnabled)">
-            <span class="label">听歌统计<small class="sub">记录收听时长与次数,用于统计页榜单;数据仅保存在本机,绝不联网上传。关闭后停止统计并隐藏统计页</small></span>
+            <span class="label">听歌统计<small class="sub">记录本地与在线收听时长和次数,统计页可分开查看;数据仅保存在本机,绝不联网上传。关闭后停止统计并隐藏统计页</small></span>
             <span class="switch" :class="{ on: statsEnabled }"><i></i></span>
           </button>
           <button class="opt" :class="{ armed: clearArmed }" @click="clearStatsConfirmed">

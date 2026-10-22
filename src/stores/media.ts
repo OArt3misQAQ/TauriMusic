@@ -1,6 +1,16 @@
 import { watch } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { player, current, toggle, next, prev, seek, setVolume } from "./player";
+import {
+  player,
+  current,
+  toggle,
+  next,
+  prev,
+  seek,
+  setVolume,
+  coverPathOf,
+  onlineCovers,
+} from "./player";
 import { api, type LyricLine } from "../api";
 
 /**
@@ -16,7 +26,8 @@ function broadcast(): void {
   void emit("media://state", {
     title: t?.title ?? "",
     artist: t?.artist ?? "",
-    cover: t?.cover ?? null,
+    // 在线曲目经 coverPathOf 兜底到在线封面缓存(本地路径,托盘 convertFileSrc 可渲染)
+    cover: coverPathOf(t),
     playing: player.playing,
     position: player.position,
     duration: player.duration,
@@ -116,9 +127,20 @@ export function initMediaBridge(): void {
       lastTrackId = id;
       const t = current.value;
       if (!t) return;
-      void api.smtcSetTrack(t.title, t.artist, t.cover ?? null, t.duration);
+      void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
       broadcast();
       void broadcastLyrics();
+    },
+  );
+
+  // 在线封面异步到达:刷新 SMTC 元数据与托盘面板,让封面"先占位后点亮"
+  watch(
+    () => (current.value ? onlineCovers.get(current.value.id) : undefined),
+    () => {
+      const t = current.value;
+      if (!t) return;
+      void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
+      broadcast();
     },
   );
 

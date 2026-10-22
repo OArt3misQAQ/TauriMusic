@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { player, current, toggle, next, prev, setVolume } from "../stores/player";
+import { player, current, toggle, next, prev, setVolume, coverPathOf } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
 
@@ -18,7 +18,11 @@ onMounted(async () => {
 });
 onUnmounted(() => unlisten?.());
 
-const coverUrl = computed(() => (current.value?.cover ? convertFileSrc(current.value.cover) : null));
+// 顶栏歌框与播放页共用同一兜底出口:本地封面优先,在线曲目落在线封面缓存(先占位后点亮)
+const coverUrl = computed(() => {
+  const src = coverPathOf(current.value);
+  return src ? convertFileSrc(src) : null;
+});
 const progress = computed(() => (player.duration > 0 ? (player.position / player.duration) * 100 : 0));
 const volFill = computed(() => `${player.volume * 100}%`);
 </script>

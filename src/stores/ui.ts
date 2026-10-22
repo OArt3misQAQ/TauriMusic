@@ -8,6 +8,7 @@ export type ViewName =
   | "artists"
   | "songs"
   | "search"
+  | "online"
   | "playlists"
   | "playlist"
   | "stats"

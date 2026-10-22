@@ -4226,7 +4226,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-music"
-version = "0.5.6"
+version = "0.6.0"
 dependencies = [
  "character_converter",
  "encoding_rs",

@@ -23,6 +23,31 @@ export interface Track {
   addedAt: number;
   mtime: number;
   size: number;
+  /** ===== 以下为在线曲目专用字段(本地曲目恒为 undefined) ===== */
+  /** 在线音源标记:播放时 src 走在线直链而非本地文件 */
+  online?: boolean;
+  /** 平台曲目 id(网易云),播放前据此取直链 */
+  onlineId?: string;
+  /** 已取到的播放直链(懒取,进队列时才请求) */
+  onlineUrl?: string;
+}
+
+/** 在线搜索结果(网易云公开接口) */
+export interface OnlineTrack {
+  id: string;
+  name: string;
+  artist: string;
+  album: string;
+  duration: number;
+  /** 0/8=可免费播放 1=VIP 4=需购买专辑 */
+  fee: number;
+}
+
+/** 在线曲目元数据:在线曲目不在曲库,统计页需要随冲刷落盘才能显示榜单 */
+export interface OnlineTrackMeta {
+  title: string;
+  artist: string;
+  album: string;
 }
 
 export interface Library {
@@ -174,10 +199,16 @@ export interface TrackStat {
 
 export interface StatsData {
   version: number;
-  /** 本地日期(YYYY-MM-DD)→ 当日收听秒数 */
+  /** 本地日期(YYYY-MM-DD)→ 当日收听秒数(本地+在线总和) */
   days: Record<string, number>;
-  /** Track.id → 单曲统计 */
+  /** Track.id(本地为路径 hash,在线为 `net:` 前缀)→ 单曲统计 */
   tracks: Record<string, TrackStat>;
+  /** 本地日期 → 本地曲目当日秒数 */
+  daysLocal: Record<string, number>;
+  /** 本地日期 → 在线曲目当日秒数 */
+  daysOnline: Record<string, number>;
+  /** 在线曲目 id → 展示用元数据 */
+  onlineMeta: Record<string, OnlineTrackMeta>;
 }
 
 /** 同一首歌的歌词请求去重:切歌时播放页与 SMTC 桥会各拉一次,
@@ -235,8 +266,9 @@ export const api = {
     plays: string[],
     day: string,
     daySec: number,
+    onlineMeta: Record<string, OnlineTrackMeta>,
     force = false,
-  ) => invoke<void>("stats_add", { samples, plays, day, daySec, force }),
+  ) => invoke<void>("stats_add", { samples, plays, day, daySec, onlineMeta, force }),
   statsClear: () => invoke<void>("stats_clear"),
   /** 系统媒体控制(SMTC)与托盘菜单的状态推送 */
   smtcSetTrack: (title: string, artist: string, cover: string | null, duration: number) =>
@@ -270,4 +302,39 @@ export const api = {
   showLyricsWindow: () => invoke<void>("show_lyrics_window"),
   hideLyricsWindow: () => invoke<void>("hide_lyrics_window"),
   getResourceUsage: () => invoke<ResourceUsage>("get_resource_usage"),
+  /** 在线搜索(网易云公开接口;免费曲目可直接播放) */
+  onlineSearch: (keyword: string, page: number) =>
+    invoke<OnlineTrack[]>("online_search", { keyword, page }),
+  /** 在线曲目播放直链(版权/VIP 受限曲目 reject;后端已做域名白名单校验) */
+  onlinePlayUrl: (id: string) => invoke<string>("online_play_url", { id }),
+  /** 在线曲目封面:Rust 端落盘到封面缓存后返回本地路径(无图返回 null) */
+  onlineCover: (id: string) => invoke<string | null>("online_cover", { id }),
 };
+
+/** 在线搜索结果 → 播放队列 Track:id 加 `net:` 前缀与本地路径 hash 空间隔离,
+ *  path 留空——播放 src 走在线直链,歌词/封面等本地探测对它一律静默落空 */
+export function onlineToTrack(t: OnlineTrack): Track {
+  return {
+    id: `net:${t.id}`,
+    title: t.name,
+    artist: t.artist,
+    album: t.album || "在线音乐",
+    albumArtist: "",
+    trackNo: null,
+    discNo: null,
+    year: null,
+    genre: null,
+    duration: t.duration,
+    path: "",
+    cover: null,
+    coverLarge: null,
+    hasLyrics: false,
+    sha256: null,
+    lrcPath: null,
+    addedAt: 0,
+    mtime: 0,
+    size: 0,
+    online: true,
+    onlineId: t.id,
+  };
+}

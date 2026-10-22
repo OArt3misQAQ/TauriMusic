@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { lib, zhCollator, trackAlbumKey } from "../stores/library";
 import { loadStats, stats, statsLoadError, todayStr } from "../stores/stats";
 
-/** 听歌统计页:全部聚合都从「单曲统计 × 当前曲库元数据」即时推导,
- *  统计文件里不冗余存歌手/专辑——标签修改后各榜单自动跟随曲库走 */
+/** 听歌统计页:本地/在线两套口径分开选择。
+ *  本地榜单用曲库元数据即时推导(标签修改后自动跟随);
+ *  在线曲目不在曲库,元数据随统计冲刷落盘(stats.onlineMeta) */
+type Scope = "local" | "online";
+const scope = ref<Scope>("local");
 
 onMounted(() => void loadStats());
 
@@ -14,15 +17,34 @@ function retry(): void {
   void loadStats();
 }
 
+/** 当前口径的元数据映射:本地来自曲库,在线来自统计文件里的元数据快照 */
 const trackMeta = computed(() => {
   const m = new Map<string, { title: string; artist: string; album: string }>();
-  for (const t of lib.tracks) {
-    m.set(t.id, { title: t.title, artist: t.artist, album: t.album });
+  if (scope.value === "local") {
+    for (const t of lib.tracks) {
+      m.set(t.id, { title: t.title, artist: t.artist, album: t.album });
+    }
+  } else {
+    for (const [id, meta] of Object.entries(stats.value?.onlineMeta ?? {})) {
+      m.set(id, meta);
+    }
   }
   return m;
 });
 
-/** 累计秒数/次数/在库歌曲数(已删除曲目的时长计入总量,不再进榜单) */
+/** 在线曲目 id 统一为 `net:` 前缀,前缀即口径分界线 */
+function inScope(id: string): boolean {
+  return scope.value === "online" ? id.startsWith("net:") : !id.startsWith("net:");
+}
+
+/** 当前口径的每日时长(本地/在线分桶由后端维护) */
+const scopeDays = computed<Record<string, number>>(() => {
+  const s = stats.value;
+  if (!s) return {};
+  return scope.value === "online" ? s.daysOnline : s.daysLocal;
+});
+
+/** 累计秒数/次数/歌曲数(已删除曲目的时长计入总量,不再进榜单) */
 const totals = computed(() => {
   let sec = 0;
   let count = 0;
@@ -30,6 +52,7 @@ const totals = computed(() => {
   const s = stats.value;
   if (s) {
     for (const [id, t] of Object.entries(s.tracks)) {
+      if (!inScope(id)) continue;
       sec += t.sec;
       count += t.count;
       if (t.sec > 0 && trackMeta.value.has(id)) songs += 1;
@@ -44,10 +67,10 @@ function dayKeyOffset(daysAgo: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-const todaySec = computed(() => stats.value?.days[todayStr()] ?? 0);
+const todaySec = computed(() => scopeDays.value[todayStr()] ?? 0);
 const weekSec = computed(() => {
   let sum = 0;
-  for (let i = 0; i < 7; i++) sum += stats.value?.days[dayKeyOffset(i)] ?? 0;
+  for (let i = 0; i < 7; i++) sum += scopeDays.value[dayKeyOffset(i)] ?? 0;
   return sum;
 });
 
@@ -56,7 +79,7 @@ const last30 = computed(() => {
   const arr: { key: string; sec: number }[] = [];
   for (let i = 29; i >= 0; i--) {
     const key = dayKeyOffset(i);
-    arr.push({ key, sec: stats.value?.days[key] ?? 0 });
+    arr.push({ key, sec: scopeDays.value[key] ?? 0 });
   }
   return arr;
 });
@@ -67,6 +90,7 @@ const topTracks = computed(() => {
   const s = stats.value;
   if (!s) return [];
   return Object.entries(s.tracks)
+    .filter(([id]) => inScope(id))
     .map(([id, st]) => ({ id, ...st, meta: trackMeta.value.get(id) }))
     .filter((t) => t.meta && t.sec > 0)
     .sort((a, b) => b.sec - a.sec)
@@ -78,6 +102,7 @@ const recentTracks = computed(() => {
   const s = stats.value;
   if (!s) return [];
   return Object.entries(s.tracks)
+    .filter(([id]) => inScope(id))
     .map(([id, st]) => ({ id, ...st, meta: trackMeta.value.get(id) }))
     .filter((t) => t.meta && t.last > 0)
     .sort((a, b) => b.last - a.last)
@@ -90,6 +115,7 @@ const topArtists = computed(() => {
   if (!s) return [];
   const agg = new Map<string, number>();
   for (const [id, st] of Object.entries(s.tracks)) {
+    if (!inScope(id)) continue;
     const meta = trackMeta.value.get(id);
     if (!meta) continue;
     for (const seg of meta.artist.split(/[/&、]/)) {
@@ -110,12 +136,21 @@ const topAlbums = computed(() => {
   if (!s) return [];
   const keyById = new Map<string, string>();
   const nameOf = new Map<string, { album: string; artist: string }>();
-  for (const t of lib.tracks) {
-    keyById.set(t.id, trackAlbumKey(t));
-    nameOf.set(trackAlbumKey(t), { album: t.album, artist: t.albumArtist || t.artist });
+  if (scope.value === "local") {
+    for (const t of lib.tracks) {
+      keyById.set(t.id, trackAlbumKey(t));
+      nameOf.set(trackAlbumKey(t), { album: t.album, artist: t.albumArtist || t.artist });
+    }
+  } else {
+    for (const [id, meta] of Object.entries(s.onlineMeta ?? {})) {
+      const key = `${meta.artist}\u{1}${meta.album || "在线音乐"}`;
+      keyById.set(id, key);
+      nameOf.set(key, { album: meta.album || "在线音乐", artist: meta.artist });
+    }
   }
   const agg = new Map<string, number>();
   for (const [id, st] of Object.entries(s.tracks)) {
+    if (!inScope(id)) continue;
     const key = keyById.get(id);
     if (!key) continue;
     agg.set(key, (agg.get(key) ?? 0) + st.sec);
@@ -162,6 +197,10 @@ function chartLabel(key: string): string {
     <header class="view-head">
       <h1>听歌统计</h1>
       <div class="right">
+        <div class="scope-tabs" role="tablist" aria-label="统计范围">
+          <button role="tab" :aria-selected="scope === 'local'" :class="{ on: scope === 'local' }" @click="scope = 'local'">本地</button>
+          <button role="tab" :aria-selected="scope === 'online'" :class="{ on: scope === 'online' }" @click="scope = 'online'">在线</button>
+        </div>
         <span class="privacy">数据仅保存在本机 · 绝不联网</span>
       </div>
     </header>
@@ -176,8 +215,8 @@ function chartLabel(key: string): string {
       <svg class="icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
         <path d="M5 20V10M12 20V4M19 20v-7" />
       </svg>
-      <h2>还没有统计数据</h2>
-      <p>开始播放音乐后,这里会逐渐积累你的收听足迹</p>
+      <h2>{{ scope === "local" ? "还没有本地播放统计" : "还没有在线播放统计" }}</h2>
+      <p>{{ scope === "local" ? "播放本地音乐后,这里会逐渐积累收听足迹" : "在线试听歌曲后,这里会逐渐积累收听足迹" }}</p>
     </div>
 
     <div v-else class="body">
@@ -191,7 +230,7 @@ function chartLabel(key: string): string {
         <div class="card">
           <span class="k">播放次数</span>
           <span class="v">{{ fmtCount(totals.count) }}</span>
-          <span class="s">听过 {{ totals.songs }} 首</span>
+          <span class="s">{{ scope === "local" ? `在库 ${totals.songs} 首` : `在线 ${totals.songs} 首` }}</span>
         </div>
         <div class="card">
           <span class="k">今日收听</span>
@@ -280,9 +319,40 @@ function chartLabel(key: string): string {
   overflow-y: auto;
   padding: 22px 28px 40px;
 }
+.right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .privacy {
   font-size: 12px;
   color: var(--text-3);
+}
+.scope-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  border: 1px solid var(--hairline);
+}
+.scope-tabs button {
+  height: 24px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+.scope-tabs button:hover {
+  color: var(--text);
+}
+.scope-tabs button.on {
+  background: var(--accent);
+  color: #fff;
 }
 .empty {
   height: 70%;

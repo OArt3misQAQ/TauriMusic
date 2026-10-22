@@ -104,6 +104,14 @@ const statusText = computed(() =>
         </svg>
         <span>听歌统计</span>
       </button>
+      <!-- 在线音乐:网易云免费曲目试听,搜索与取链都在 Rust 端(CSP 禁前端直连外网) -->
+      <button class="nav-item" :class="{ active: ui.view === 'online' }" @click="go('online')">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <circle cx="12" cy="12" r="8.2" />
+          <path d="M3.8 12h16.4M12 3.8c2.5 2.3 3.8 5.1 3.8 8.2s-1.3 5.9-3.8 8.2c-2.5-2.3-3.8-5.1-3.8-8.2s1.3-5.9 3.8-8.2z" />
+        </svg>
+        <span>在线音乐</span>
+      </button>
     </nav>
 
     <div class="section-label pl-head">

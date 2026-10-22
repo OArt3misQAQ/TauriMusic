@@ -21,6 +21,7 @@ import AlbumDetailView from "./views/AlbumDetailView.vue";
 import ArtistsView from "./views/ArtistsView.vue";
 import SongsView from "./views/SongsView.vue";
 import SearchView from "./views/SearchView.vue";
+import OnlineView from "./views/OnlineView.vue";
 import StatsView from "./views/StatsView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import TrashView from "./views/TrashView.vue";
@@ -30,7 +31,7 @@ import { api } from "./api";
 import { initShortcuts } from "./stores/shortcuts";
 import { initStats } from "./stores/stats";
 import { initMediaBridge } from "./stores/media";
-import { current } from "./stores/player";
+import { current, playerFlash, coverPathOf } from "./stores/player";
 import { nameDialog, picker } from "./stores/playlists";
 
 const views = {
@@ -39,6 +40,7 @@ const views = {
   artists: ArtistsView,
   songs: SongsView,
   search: SearchView,
+  online: OnlineView,
   playlists: PlaylistsView,
   playlist: PlaylistDetailView,
   stats: StatsView,
@@ -53,8 +55,9 @@ const pageKey = computed(
 );
 
 const ambientImg = computed(() => {
-  // 氛围背景全屏铺开,用大图档;模糊之下小图也够,但大图切歌时的淡入更细腻
-  const src = current.value?.coverLarge ?? current.value?.cover;
+  // 氛围背景全屏铺开,用大图档;模糊之下小图也够,但大图切歌时的淡入更细腻。
+  // 在线曲目经 coverPathOf 兜底到在线封面缓存,取到即淡入
+  const src = coverPathOf(current.value);
   return src ? `url("${convertFileSrc(src)}")` : "";
 });
 const ambientKey = computed(() => current.value?.id ?? "none");
@@ -171,6 +174,13 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
     </Transition>
 
     <ContextMenu />
+
+    <!-- 播放失败等瞬时提示(VIP/版权受限、网络错误):悬浮于底部,数秒自动消失 -->
+    <Transition name="flash">
+      <div v-if="playerFlash.text" :key="playerFlash.at" class="flash-bar">
+        {{ playerFlash.text }}
+      </div>
+    </Transition>
   </div>
 </template>
 <style scoped>
@@ -178,6 +188,43 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
   height: 100%;
   position: relative;
   overflow: hidden;
+}
+/* 瞬时提示条:底部悬浮胶囊 */
+.flash-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 300;
+  max-width: min(78vw, 420px);
+  padding: 9px 18px;
+  border-radius: 999px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #fff;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flash-enter-active {
+  transition:
+    opacity 0.24s ease,
+    transform 0.3s var(--ease-spring);
+}
+.flash-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+.flash-enter-from,
+.flash-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(12px);
 }
 .shell {
   display: grid;

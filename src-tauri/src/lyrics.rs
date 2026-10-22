@@ -22,7 +22,7 @@ pub struct LyricsPayload {
 }
 
 impl LyricsPayload {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.synced.as_ref().is_none_or(|l| l.is_empty())
             && self.plain.as_deref().is_none_or(|p| p.trim().is_empty())
     }
