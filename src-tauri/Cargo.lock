@@ -4232,7 +4232,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-music"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "character_converter",

@@ -9,6 +9,8 @@ export const StorageKeys = {
   mode: `${PREFIX}mode`,
   /** 听歌统计总开关("0"=关闭):只管偏好,数据本体在 Rust 端 stats.json */
   stats: `${PREFIX}stats`,
+  /** 在线音质档:high=各平台免费上限(网易云/酷狗 320k),standard=128k */
+  onlineQuality: `${PREFIX}online-quality`,
 } as const;
 
 export function storageGet(key: string): string | null {

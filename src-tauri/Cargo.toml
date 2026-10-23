@@ -1,6 +1,6 @@
 [package]
 name = "tauri-music"
-version = "0.7.0"
+version = "0.8.0"
 description = "Apple Music 风格的本地音乐播放器"
 authors = ["O_Art3mis"]
 edition = "2021"

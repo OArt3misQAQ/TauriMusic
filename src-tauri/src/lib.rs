@@ -1701,12 +1701,19 @@ async fn online_search(
         .map_err(|e| e.to_string())?
 }
 
-/// 取在线曲目播放直链(VIP/版权受限曲目报错)
+/// 取在线曲目播放直链(VIP/版权受限曲目报错)。quality 缺省按较高档处理,
+/// 各来源能免费给到多少码率由 online.rs 决定,不做任何付费试探
 #[tauri::command]
-async fn online_play_url(source: String, id: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || online::play_url(&source, &id))
-        .await
-        .map_err(|e| e.to_string())?
+async fn online_play_url(
+    source: String,
+    id: String,
+    quality: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        online::play_url(&source, &id, online::parse_quality(quality.as_deref()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 在线封面专用客户端:禁止跟随重定向。直链已通过域名白名单,
@@ -1802,6 +1809,183 @@ async fn online_cover(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 在线下载专用客户端:整首歌的传输不能套取链接口的 15s 短超时,
+/// 320k 曲目约 10MB,弱网下要跑几十秒。不带 Cookie/Referer——直链无鉴权,
+/// 把某平台的凭据发给别家 CDN 只是多余暴露。允许重定向是因为存下来的字节
+/// 必须与播放器直接流式听到的那份一致(试听 CDN 本身就靠 30x 选节点)
+fn download_client() -> reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                )
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+        })
+        .clone()
+}
+
+/// 从直链推容器扩展名:各来源、各档位下发的格式不同(QQ 匿名档是 m4a,
+/// 酷狗免费档可能给 flac)。扫描器按扩展名认格式,认不出才退回 mp3
+fn media_ext_from_url(url: &str) -> &'static str {
+    const CANDIDATES: &[&str] = &["mp3", "m4a", "flac", "ogg", "oga", "opus", "wav"];
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let tail = path.rsplit('/').next().unwrap_or(path);
+    tail.rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .and_then(|ext| CANDIDATES.iter().find(|c| **c == ext).copied())
+        .unwrap_or("mp3")
+}
+
+/// 给下载的音频写基础标签(标题/艺人/专辑/封面)。文件名解析只是兜底,
+/// 标签才是曲库元数据的正源;失败不致命,下载流程继续(仅元数据降级)
+fn write_audio_tags(
+    path: &Path,
+    name: &str,
+    artist: &str,
+    album: &str,
+    cover: Option<&Path>,
+) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::picture::{MimeType, Picture, PictureType};
+    use lofty::tag::{ItemKey, Tag};
+    let mut tagged = lofty::probe::Probe::open(path)
+        .and_then(|p| p.read())
+        .map_err(|e| format!("音频解析失败: {e}"))?;
+    {
+        let tag = match tagged.primary_tag_mut() {
+            Some(t) => t,
+            // CDN 裸流常无任何标签:按文件同型补一个空标签再填
+            None => {
+                let ty = tagged.primary_tag_type();
+                tagged.insert_tag(Tag::new(ty));
+                tagged
+                    .primary_tag_mut()
+                    .ok_or_else(|| "无法建立音频标签".to_string())?
+            }
+        };
+        tag.insert_text(ItemKey::TrackTitle, name.to_string());
+        tag.insert_text(ItemKey::TrackArtist, artist.to_string());
+        if !album.trim().is_empty() {
+            tag.insert_text(ItemKey::AlbumTitle, album.to_string());
+        }
+        // 内嵌封面:在线专辑图恒为 jpg;有旧封面先摘,防重复叠加
+        if let Some(cover) = cover {
+            let data = fs::read(cover).map_err(|e| format!("封面读取失败: {e}"))?;
+            if !data.is_empty() {
+                tag.remove_picture_type(PictureType::CoverFront);
+                tag.push_picture(Picture::new_unchecked(
+                    PictureType::CoverFront,
+                    Some(MimeType::Jpeg),
+                    None,
+                    data,
+                ));
+            }
+        }
+    }
+    // 变更写回原文件:TaggedFile 经 AudioFile::save_to_path 就地保存
+    tagged
+        .save_to_path(path, WriteOptions::default())
+        .map_err(|e| format!("标签写入失败: {e}"))
+}
+
+/// 下载入库附带的曲目元数据:取自在线搜索结果,是内嵌标签与文件名的正源
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlineDownloadMeta {
+    name: String,
+    artist: String,
+    album: String,
+    /// QQ/酷狗的封面直链来自搜索结果(网易云走详情接口,这里为空)
+    #[serde(default)]
+    cover_url: Option<String>,
+}
+
+/// 在线曲目保存到本地库:取免费直链 → 下载 → 写标签/封面/旁路歌词 → 临时文件走
+/// 既有散装导入管线(复制进导入目录 + 扫描归位 + SHA 指纹去重)。
+/// 付费/受限曲目在取链一步就报错,与在线播放共用同一道闸,不做任何绕过
+#[tauri::command]
+async fn online_download(
+    source: String,
+    id: String,
+    meta: OnlineDownloadMeta,
+    quality: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        online_download_blocking(&source, &id, &meta, quality.as_deref(), &app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn online_download_blocking(
+    source: &str,
+    id: &str,
+    meta: &OnlineDownloadMeta,
+    quality: Option<&str>,
+    app: &tauri::AppHandle,
+) -> Result<ImportReport, String> {
+    let OnlineDownloadMeta {
+        name,
+        artist,
+        album,
+        cover_url,
+    } = meta;
+    // 1. 取链:与播放同一来源、同一档位,存进库的就是刚听到的那份文件
+    let url = online::play_url(source, id, online::parse_quality(quality))?;
+    // 2. 下载到内存(免费档整首约 3-12MB,一次读入可接受)
+    let resp = download_client()
+        .get(&url)
+        .send()
+        .map_err(|e| format!("下载请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败(HTTP {})", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("下载中断: {e}"))?;
+    if bytes.is_empty() {
+        return Err("下载内容为空,请稍后重试".into());
+    }
+    // 3. 落到一次性临时目录:导入管线按 file_name() 复制,所以唯一性靠目录、
+    //    文件名保持干净的「艺人 - 标题」——标签写失败时扫描器还能从文件名兜底解析
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let stem = format!("{} - {}", sanitize_name(artist), sanitize_name(name));
+    let ext = media_ext_from_url(&url);
+    let staging = std::env::temp_dir().join(format!("taurimusic-dl-{nanos}"));
+    fs::create_dir_all(&staging).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let tmp = staging.join(format!("{stem}.{ext}"));
+    fs::write(&tmp, &bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    // 4. 顺带取在线封面嵌进标签、歌词写成同名 .lrc:入库件即刻带图文,
+    //    两者失败都不致命(后续可用在线匹配补齐)
+    let cover = ensure_online_cover(source, id, cover_url.as_deref(), app)
+        .ok()
+        .flatten()
+        .map(PathBuf::from);
+    let _ = write_audio_tags(&tmp, name, artist, album, cover.as_deref());
+    let mut pending = vec![tmp.to_string_lossy().into_owned()];
+    let lrc_tmp = tmp.with_extension("lrc");
+    if let Ok(Some(payload)) = online::lyric_payload(source, id) {
+        if let Some(text) = lyrics::render(&payload) {
+            if fs::write(&lrc_tmp, text).is_ok() {
+                pending.push(lrc_tmp.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // 5. 复用散装导入管线:复制进导入目录 + 全量扫描 + 指纹记录 + 事件广播
+    let report = import_paths_blocking(&pending, app)?;
+    // 临时目录整体清掉:音频与旁路歌词成对生成,也成对消失
+    let _ = fs::remove_dir_all(&staging);
+    Ok(report)
 }
 
 fn netease_enrich_blocking(
@@ -4514,6 +4698,7 @@ pub fn run() {
             get_resource_usage,
             online_search,
             online_play_url,
+            online_download,
             online_cover
         ])
         .run(tauri::generate_context!())
@@ -4523,11 +4708,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        artist_matches, copy_into_import_dir, is_under, name_matches, place_archive,
-        same_file_content, sanitize_name, sha256_hex, CopyResult,
+        artist_matches, copy_into_import_dir, is_under, media_ext_from_url, name_matches,
+        place_archive, same_file_content, sanitize_name, sha256_hex, CopyResult,
     };
     use crate::model;
     use std::fs;
+
+    #[test]
+    fn media_ext_from_url_follows_the_delivered_container() {
+        // 各来源给的容器不同:存错扩展名会让扫描器认不出这个文件
+        assert_eq!(
+            media_ext_from_url("https://m801.music.126.net/2026/x/y.mp3?session=1"),
+            "mp3"
+        );
+        assert_eq!(
+            media_ext_from_url("https://isure.stream.qqmusic.qq.com/C400ABC.m4a?vkey=1"),
+            "m4a"
+        );
+        assert_eq!(
+            media_ext_from_url("http://fsandroid.tx.kugou.com/2026/a/b.flac"),
+            "flac"
+        );
+        // 认不出的扩展名退回 mp3(免费档几乎都是 mp3)
+        assert_eq!(media_ext_from_url("https://kw-bj.kuwo.cn/a/b.xyz"), "mp3");
+        assert_eq!(media_ext_from_url("https://a.com/path"), "mp3");
+    }
 
     #[test]
     fn is_under_uses_path_components() {

@@ -111,7 +111,9 @@ async function copyMail(): Promise<void> {
         </div>
       </div>
 
-      <p class="desc">本地优先的音乐播放器,支持网易云免费曲目在线试听,自动识别封面、歌词与专辑信息。</p>
+      <p class="desc">
+        本地优先的音乐播放器,支持网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐的免费曲目在线试听与保存入库,自动识别封面、歌词与专辑信息。
+      </p>
 
       <div class="author">
         <span class="label">作者</span>

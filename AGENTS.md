@@ -51,6 +51,8 @@ npm run build   # 含 vue-tsc 类型检查
 - **CSP 只放行显式白名单**：`media-src` 仅允许 `https://*.music.126.net`、`https://music.126.net`、`https://music.163.com`、`https://*.stream.qqmusic.qq.com`、`https://*.kugou.com`、`https://kugou.com`、`https://*.kuwo.cn`、`https://kuwo.cn`；`connect-src` 仍然只放 ipc——所有 HTTP 都走 Rust 端 reqwest，前端禁止直连外网。禁止改回 `media-src https:` 之类的通配放行。
 - `online::restrict_media_url` / `restrict_cover_url`（共用 `restrict_url`）是交给 WebView 前的最后一道闸：http 统一升 https，按来源拒绝非官方主机、非常规端口、userinfo 与空路径；播放直链与封面图都必须经过它。曲目 id 必须符合来源形状（`online::validate_id`：数字 / songmid / 32 位 hex），它还会拼进封面缓存文件名，防路径穿越。
 - 直链**懒取**：进队列时不请求，真正 load 才取，取到缓存回 `track.onlineUrl`；`player.ts` 的 `loadSeq` 是竞态令牌，慢响应不得覆盖新歌。
+- **音质只取免费上限**：`play_url(source, id, Quality)`，`High` 是各平台给匿名听众的最高免费档——网易云 `br=320000`（无 320k 源时接口自己降级）、酷狗 `HQFileHash`（320k，档位由 hash 决定而非 `br` 参数，搜索时按 `HQPrivilege<10` 记进 `KUGOU_HQ_HASHES` 会话表）；QQ 与酷我匿名最高 128k，收到 High 也照原样取。酷狗 HQ 被接口拒绝时回落 128k，档位是上限不是硬性条件。偏好存 `tm-online-quality`，切档只清队列里在线曲目的 `onlineUrl`，不打断正在出声的那首。
+- **保存到本地库**：`online_download` = 取链（与播放同一道闸）→ `download_client`（300s 超时、无 Cookie/Referer）→ 按直链推容器扩展名 → `write_audio_tags` 写标签+内嵌封面、`lyrics::render` 回写同名 `.lrc` → 复用 `import_paths_blocking` 落导入目录并 SHA 判重。标签/歌词写入失败都不致命，仅元数据降级。
 - 在线曲目封面落 `covers/online/{source}_{id}.jpg`（网易云沿用 `{id}.jpg`），前端经 `coverPathOf` 统一兜底；歌词走 `get_lyrics` 的来源前缀分发 + 进程内缓存。
 - 付费红线：网易云/QQ/酷狗由接口自身对 VIP 返回空链；**酷我 anti.s 对 VIP 也返回直链**，因此 `online_play_url` 只允许本次会话搜索结果里 `PAY=0` 的酷我曲目取链（`KUWO_FREE_IDS` 白名单）。任何情况下都不做登录态、签名绕过或付费解锁。
 

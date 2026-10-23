@@ -165,6 +165,41 @@ fn parse_time(s: &str) -> Option<f64> {
     }
 }
 
+/// 把歌词载荷回写成 LRC 文本(在线曲目存入本地库时写旁路 .lrc)。
+/// 双语行按同一时间戳输出两行,与 parse 侧「同时间戳合并译文」的约定对称;
+/// 只有纯文本词(无时间轴)时原样落盘
+pub fn render(payload: &LyricsPayload) -> Option<String> {
+    if let Some(lines) = payload.synced.as_ref().filter(|l| !l.is_empty()) {
+        let mut out = String::new();
+        for l in lines {
+            let ms = l.time_ms.max(0.0) as u64;
+            let stamp = format!(
+                "[{:02}:{:02}.{:02}]",
+                ms / 60_000,
+                (ms / 1000) % 60,
+                (ms % 1000) / 10
+            );
+            out.push_str(&stamp);
+            out.push_str(&l.text);
+            out.push('\n');
+            if let Some(t) = &l.translation {
+                if !t.trim().is_empty() {
+                    out.push_str(&stamp);
+                    out.push_str(t);
+                    out.push('\n');
+                }
+            }
+        }
+        return Some(out);
+    }
+    payload
+        .plain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// 字节流解码:优先 UTF-8(含 BOM),失败后按 GBK/GB18030 兜底。
 /// 中文圈的 .lrc 文件很多是 GBK 编码。
 pub fn decode_bytes(bytes: &[u8]) -> String {
@@ -344,6 +379,26 @@ mod tests {
         assert_eq!(parse_time("01:30.5"), Some(90_500.0));
         assert_eq!(parse_time("0:00"), Some(0.0));
         assert_eq!(parse_time("2:05.25"), Some(125_250.0));
+    }
+
+    #[test]
+    fn render_writes_back_synced_and_bilingual_lines() {
+        let payload = parse("[00:01.20]原文\n[00:01.20]译文\n[01:02.35]下一句\n");
+        let text = render(&payload).unwrap();
+        assert_eq!(text, "[00:01.20]原文\n[00:01.20]译文\n[01:02.35]下一句\n");
+        // 回写的文本能被同一个解析器读回,行数与时间戳都不丢
+        let again = parse(&text);
+        assert_eq!(
+            again.synced.as_ref().unwrap().len(),
+            payload.synced.as_ref().unwrap().len()
+        );
+    }
+
+    #[test]
+    fn render_falls_back_to_plain_text() {
+        let payload = parse("没有时间轴的纯文本词\n第二行");
+        assert_eq!(render(&payload).unwrap(), "没有时间轴的纯文本词\n第二行");
+        assert!(render(&parse("")).is_none());
     }
 
     #[test]

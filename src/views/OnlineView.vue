@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { api, onlineToTrack, type OnlineSource, type OnlineTrack } from "../api";
-import { flash, fmtTime, playTrack } from "../stores/player";
+import { api, onlineToTrack, type OnlineQuality, type OnlineSource, type OnlineTrack } from "../api";
+import { flash, fmtTime, onlineQuality, playTrack, setOnlineQuality } from "../stores/player";
 
 /** 搜索状态机:idle 无结果 / loading 请求中 / done 有结果或空 / err 失败 */
 type Phase = "idle" | "loading" | "done" | "err";
@@ -20,6 +20,17 @@ const SOURCES: { id: OnlineSource; label: string }[] = [
 ];
 const source = ref<OnlineSource>("netease");
 const sourceLabel = computed(() => SOURCES.find((s) => s.id === source.value)?.label ?? "");
+
+const QUALITIES: { id: OnlineQuality; label: string; note: string }[] = [
+  { id: "standard", label: "标准", note: "128k" },
+  { id: "high", label: "高清", note: "最高 320k" },
+];
+/** 免费上限由各平台自己决定:QQ/酷我匿名只给 128k,升档不会变(不试探付费文件) */
+const qualitySupported = computed(() => source.value === "netease" || source.value === "kugou");
+const qualityNote = computed(() => {
+  if (!qualitySupported.value) return "该音源免费上限 128k";
+  return onlineQuality.value === "high" ? "320k · 平台免费上限" : "128k · 更省流量";
+});
 
 /** 切来源:清空结果,避免把 A 平台的曲目混进 B 平台队列 */
 function selectSource(s: OnlineSource): void {
@@ -93,6 +104,33 @@ function play(t: OnlineTrack): void {
     results.value.filter(playable).map(onlineToTrack),
   );
 }
+
+/** 正在保存的曲目 id:一次只跑一首,并发写库会让扫描与指纹互相打架 */
+const savingId = ref("");
+
+/** 保存到本地库:与播放同一道闸,付费曲目取链就失败,不存在绕过 */
+async function save(t: OnlineTrack): Promise<void> {
+  if (!playable(t) || savingId.value) return;
+  savingId.value = t.id;
+  try {
+    const r = await api.onlineDownload(
+      t.source,
+      t.id,
+      { name: t.name, artist: t.artist, album: t.album, cover: t.cover },
+      onlineQuality.value,
+    );
+    // 内容指纹判重:同一首反复保存不会在库里堆出两份
+    flash(
+      r.duplicates > 0 || r.skipped > 0
+        ? "这首已经在本地库里"
+        : `已存入本地库:${t.name}`,
+    );
+  } catch (e) {
+    flash(e instanceof Error ? e.message : String(e));
+  } finally {
+    savingId.value = "";
+  }
+}
 </script>
 
 <template>
@@ -100,7 +138,7 @@ function play(t: OnlineTrack): void {
     <div class="online-shell">
       <header class="ov-head">
         <h1>在线音乐</h1>
-        <p class="sub">搜索并试听各平台免费曲目 · 仅供试听,支持正版</p>
+        <p class="sub">搜索并试听各平台免费曲目 · 可保存到本地库 · 支持正版</p>
       </header>
 
       <section class="search-panel">
@@ -120,6 +158,30 @@ function play(t: OnlineTrack): void {
             </button>
           </div>
           <span class="panel-hint">仅免费曲目 · 无需登录</span>
+        </div>
+
+        <div class="panel-opts">
+          <span class="opt-label">音质</span>
+          <div class="quals" role="radiogroup" aria-label="在线音质">
+            <button
+              v-for="q in QUALITIES"
+              :key="q.id"
+              type="button"
+              role="radio"
+              :aria-checked="onlineQuality === q.id"
+              class="qual"
+              :class="{ on: onlineQuality === q.id }"
+              :disabled="!qualitySupported"
+              :title="
+                qualitySupported ? `${q.label} ${q.note}` : '该音源免费上限 128k,无需选择'
+              "
+              @click="setOnlineQuality(q.id)"
+            >
+              {{ q.label }}
+              <span class="qual-note">{{ q.note }}</span>
+            </button>
+          </div>
+          <span class="opt-hint">{{ qualityNote }}</span>
         </div>
 
         <form class="ov-search" @submit.prevent="search">
@@ -188,7 +250,7 @@ function play(t: OnlineTrack): void {
             v-for="(t, i) in results"
             :key="t.id"
             class="ov-row"
-            :class="{ dim: !playable(t) }"
+            :class="{ dim: !playable(t), saving: savingId === t.id }"
           >
             <button
               class="ov-main"
@@ -207,6 +269,21 @@ function play(t: OnlineTrack): void {
               </span>
               <span v-if="!playable(t)" class="vip">VIP</span>
               <span class="dur">{{ fmtTime(t.duration) }}</span>
+            </button>
+            <button
+              v-if="playable(t)"
+              class="row-save"
+              type="button"
+              :disabled="savingId !== ''"
+              :aria-label="`保存 ${t.name} 到本地库`"
+              :title="savingId === t.id ? '正在下载…' : '保存到本地库'"
+              @click="save(t)"
+            >
+              <span v-if="savingId === t.id" class="row-spin" aria-hidden="true"></span>
+              <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4.6v9.2m0 0 3.4-3.4M12 13.8l-3.4-3.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M5.4 18.4h13.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
             </button>
           </div>
         </div>
@@ -271,6 +348,67 @@ function play(t: OnlineTrack): void {
   font-size: 11.5px;
   color: var(--text-3);
   white-space: nowrap;
+}
+.panel-opts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.opt-label {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.opt-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.quals {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  border: 1px solid var(--hairline);
+}
+.qual {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+.qual:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+.qual.on {
+  background: var(--accent);
+  color: #fff;
+}
+.qual:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.qual:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+.qual-note {
+  font-size: 10.5px;
+  font-weight: 500;
+  opacity: 0.7;
 }
 .sources {
   display: inline-flex;
@@ -570,6 +708,43 @@ function play(t: OnlineTrack): void {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
+/* 保存按钮:行 hover 才现身,和行内播放图标一个脾气;正在保存的那行常驻并转圈 */
+.row-save {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-right: 8px;
+  border-radius: 50%;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+}
+.ov-row:hover .row-save,
+.row-save:focus-visible,
+.ov-row.saving .row-save {
+  display: flex;
+}
+.row-save:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--accent);
+}
+.row-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.row-save svg {
+  width: 15px;
+  height: 15px;
+}
+.row-spin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--hairline);
+  border-top-color: var(--accent);
+  animation: ov-spin 0.7s linear infinite;
+}
 .more {
   align-self: center;
   margin: 14px 0 4px;
@@ -593,7 +768,8 @@ function play(t: OnlineTrack): void {
 }
 
 @media (max-width: 760px) {
-  .panel-hint {
+  .panel-hint,
+  .opt-hint {
     display: none;
   }
   .search-panel {
@@ -601,6 +777,12 @@ function play(t: OnlineTrack): void {
   }
   .src {
     padding: 0 12px;
+  }
+  .qual {
+    padding: 0 10px;
+  }
+  .qual-note {
+    display: none;
   }
 }
 </style>
