@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { api, onlineToTrack, type OnlineSource, type OnlineTrack } from "../api";
 import { flash, fmtTime, playTrack } from "../stores/player";
 
@@ -19,6 +19,7 @@ const SOURCES: { id: OnlineSource; label: string }[] = [
   { id: "kuwo", label: "酷我音乐" },
 ];
 const source = ref<OnlineSource>("netease");
+const sourceLabel = computed(() => SOURCES.find((s) => s.id === source.value)?.label ?? "");
 
 /** 切来源:清空结果,避免把 A 平台的曲目混进 B 平台队列 */
 function selectSource(s: OnlineSource): void {
@@ -96,153 +97,259 @@ function play(t: OnlineTrack): void {
 
 <template>
   <div class="view">
-    <div class="ov-head">
-      <h1>在线音乐</h1>
-      <p class="sub">搜索并试听各平台免费曲目 · 仅供试听,支持正版</p>
-      <div class="sources" role="tablist" aria-label="在线音源">
-        <button
-          v-for="s in SOURCES"
-          :key="s.id"
-          type="button"
-          role="tab"
-          :aria-selected="source === s.id"
-          class="src"
-          :class="{ on: source === s.id }"
-          @click="selectSource(s.id)"
-        >
-          {{ s.label }}
-        </button>
+    <div class="online-shell">
+      <header class="ov-head">
+        <h1>在线音乐</h1>
+        <p class="sub">搜索并试听各平台免费曲目 · 仅供试听,支持正版</p>
+      </header>
+
+      <section class="search-panel">
+        <div class="panel-top">
+          <div class="sources" role="tablist" aria-label="在线音源">
+            <button
+              v-for="s in SOURCES"
+              :key="s.id"
+              type="button"
+              role="tab"
+              :aria-selected="source === s.id"
+              class="src"
+              :class="{ on: source === s.id }"
+              @click="selectSource(s.id)"
+            >
+              {{ s.label }}
+            </button>
+          </div>
+          <span class="panel-hint">仅免费曲目 · 无需登录</span>
+        </div>
+
+        <form class="ov-search" @submit.prevent="search">
+          <svg class="s-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+          <input
+            v-model="keyword"
+            type="search"
+            enterkeyhint="search"
+            aria-label="搜索在线音乐"
+            placeholder="搜索歌曲 / 艺人 / 专辑"
+            @keydown.enter.prevent="search"
+          />
+          <button v-if="keyword" class="clear" type="button" title="清空" @click="keyword = ''">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="go" type="submit" :disabled="!keyword.trim() || phase === 'loading'">
+            {{ phase === "loading" && results.length === 0 ? "搜索中…" : "搜索" }}
+          </button>
+        </form>
+      </section>
+
+      <div v-if="phase === 'err'" class="state-card">
+        <span class="state-icon state-icon-error">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.7" />
+            <path d="M12 7.8v5.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <circle cx="12" cy="16.4" r="0.9" fill="currentColor" />
+          </svg>
+        </span>
+        <h2>搜索失败</h2>
+        <p>{{ errMsg }}</p>
+        <button class="state-action" type="button" @click="search">重试</button>
       </div>
-      <form class="ov-search" @submit.prevent="search">
-        <svg class="s-ico" viewBox="0 0 24 24">
-          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
-          <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-        </svg>
-        <input
-          v-model="keyword"
-          type="search"
-          enterkeyhint="search"
-          placeholder="歌曲 / 艺人 / 专辑"
-          @keydown.enter.prevent="search"
-        />
-        <button v-if="keyword" class="clear" type="button" title="清空" @click="keyword = ''">
-          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
-        </button>
-        <button class="go" type="submit" :disabled="!keyword.trim() || phase === 'loading'">
-          {{ phase === "loading" && results.length === 0 ? "搜索中…" : "搜索" }}
-        </button>
-      </form>
-    </div>
 
-    <div v-if="phase === 'err'" class="empty">
-      <h2>搜索失败</h2>
-      <p>{{ errMsg }}</p>
-    </div>
-
-    <div v-else-if="phase === 'done' && results.length === 0" class="empty">
-      <h2>没有找到“{{ keyword }}”相关曲目</h2>
-      <p>试试其他关键词</p>
-    </div>
-
-    <div v-else-if="results.length" class="ov-list">
-      <div v-for="(t, i) in results" :key="t.id" class="ov-row" :class="{ dim: !playable(t) }">
-        <button class="ov-main" @click="play(t)">
-          <span class="no">{{ i + 1 }}</span>
-          <span class="meta">
-            <span class="t">{{ t.name }}</span>
-            <span class="a">{{ t.artist }}<template v-if="t.album"> · {{ t.album }}</template></span>
-          </span>
-          <span v-if="!playable(t)" class="vip">VIP</span>
-          <span class="dur">{{ fmtTime(t.duration) }}</span>
-        </button>
+      <div v-else-if="phase === 'loading' && results.length === 0" class="state-card">
+        <span class="state-spinner" aria-hidden="true"></span>
+        <h2>正在搜索…</h2>
+        <p>正在连接 {{ sourceLabel }}</p>
       </div>
-      <button v-if="lastPage >= 0" class="more" :disabled="phase === 'loading'" @click="loadMore">
-        {{ phase === "loading" ? "加载中…" : "加载更多" }}
-      </button>
-      <p v-else-if="results.length >= 30" class="end-hint">没有更多了</p>
-    </div>
 
-    <div v-else class="empty">
-      <h2>搜索在线音乐</h2>
-      <p>输入关键词,按回车或点击搜索</p>
+      <div v-else-if="phase === 'done' && results.length === 0" class="state-card">
+        <span class="state-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7" />
+            <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+            <path d="M8.6 11h4.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          </svg>
+        </span>
+        <h2>没有找到“{{ keyword }}”</h2>
+        <p>换个关键词,或切换其它音源试试</p>
+      </div>
+
+      <section v-else-if="results.length" class="results">
+        <div class="results-head">
+          <h2>搜索结果</h2>
+          <span>已加载 {{ results.length }} 首 · {{ sourceLabel }}</span>
+        </div>
+
+        <div class="ov-list">
+          <div
+            v-for="(t, i) in results"
+            :key="t.id"
+            class="ov-row"
+            :class="{ dim: !playable(t) }"
+          >
+            <button
+              class="ov-main"
+              :title="playable(t) ? `播放 ${t.name}` : `${t.name} 需要会员或暂无版权`"
+              @click="play(t)"
+            >
+              <span class="no">
+                <span class="num">{{ i + 1 }}</span>
+                <svg v-if="playable(t)" class="row-play" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8.2 5.5v13L19 12z" fill="currentColor" />
+                </svg>
+              </span>
+              <span class="meta">
+                <span class="t">{{ t.name }}</span>
+                <span class="a">{{ t.artist }}<template v-if="t.album"> · {{ t.album }}</template></span>
+              </span>
+              <span v-if="!playable(t)" class="vip">VIP</span>
+              <span class="dur">{{ fmtTime(t.duration) }}</span>
+            </button>
+          </div>
+        </div>
+
+        <button v-if="lastPage >= 0" class="more" :disabled="phase === 'loading'" @click="loadMore">
+          {{ phase === "loading" ? "加载中…" : "加载更多" }}
+        </button>
+        <p v-else-if="results.length >= 30" class="end-hint">没有更多了</p>
+      </section>
+
+      <div v-else class="state-card state-idle">
+        <span class="state-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.2 17.3V7l9-1.9v10.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+            <circle cx="6.9" cy="17.4" r="2.3" fill="none" stroke="currentColor" stroke-width="1.7" />
+            <circle cx="15.9" cy="15.4" r="2.3" fill="none" stroke="currentColor" stroke-width="1.7" />
+          </svg>
+        </span>
+        <h2>搜索在线音乐</h2>
+        <p>支持网易云、QQ 音乐、酷狗音乐与酷我音乐</p>
+        <span class="state-hint">输入关键词,按回车或点击搜索</span>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.online-shell {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+}
 .ov-head {
   margin-bottom: 18px;
 }
 .ov-head h1 {
-  font-size: 22px;
-  font-weight: 800;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
 }
 .sub {
-  font-size: 12px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.search-panel {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--bg-2) 68%, transparent);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.panel-hint {
+  flex: none;
+  font-size: 11.5px;
   color: var(--text-3);
-  margin-top: 3px;
+  white-space: nowrap;
 }
 .sources {
-  display: flex;
-  gap: 4px;
-  margin-top: 12px;
-}
-.src {
-  height: 28px;
-  padding: 0 14px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   border-radius: 999px;
   background: var(--pill-bg);
   border: 1px solid var(--hairline);
+}
+.src {
+  height: 30px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text-2);
   transition:
     background 0.18s ease,
     color 0.18s ease,
-    border-color 0.18s ease;
+    box-shadow 0.18s ease;
 }
 .src:hover {
   color: var(--text);
+  background: var(--hover);
 }
 .src.on {
   background: var(--accent);
-  border-color: var(--accent);
   color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.src:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 .ov-search {
-  margin-top: 14px;
+  margin-top: 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 12px;
-  height: 42px;
-  border-radius: 12px;
-  background: var(--pill-bg);
+  gap: 10px;
+  height: 48px;
+  padding: 0 6px 0 14px;
+  border-radius: 14px;
   border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
 }
 .ov-search:focus-within {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--hairline));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
 }
 .s-ico {
-  width: 17px;
-  height: 17px;
-  color: var(--text-3);
   flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--text-3);
 }
 .ov-search input {
   flex: 1;
   min-width: 0;
   height: 100%;
-  font-size: 14px;
+  border: 0;
+  outline: none;
   background: transparent;
+  color: var(--text);
+  font-size: 14.5px;
 }
 .ov-search input::placeholder {
   color: var(--text-3);
 }
 .clear {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -259,13 +366,15 @@ function play(t: OnlineTrack): void {
 }
 .go {
   flex: none;
-  height: 30px;
-  padding: 0 16px;
+  height: 36px;
+  padding: 0 20px;
+  border: 0;
   border-radius: 999px;
   background: var(--accent);
   color: #fff;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
+  transition: background 0.18s ease;
 }
 .go:disabled {
   opacity: 0.45;
@@ -275,18 +384,111 @@ function play(t: OnlineTrack): void {
   background: var(--accent-hover);
 }
 
+.state-card {
+  min-height: 300px;
+  margin-top: 20px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  text-align: center;
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--bg-2) 62%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.state-card h2 {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--text);
+}
+.state-card p {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.state-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.state-icon {
+  width: 52px;
+  height: 52px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.state-icon svg {
+  width: 24px;
+  height: 24px;
+}
+.state-icon-error {
+  color: #e0a23a;
+  background: color-mix(in srgb, #e0a23a 12%, transparent);
+  border-color: color-mix(in srgb, #e0a23a 22%, transparent);
+}
+.state-spinner {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  border: 3px solid var(--hairline);
+  border-top-color: var(--accent);
+  animation: ov-spin 0.8s linear infinite;
+}
+.state-action {
+  margin-top: 8px;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.state-action:hover {
+  background: var(--accent-hover);
+}
+@keyframes ov-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.results-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 22px 2px 8px;
+}
+.results-head h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+.results-head span {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
 .ov-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .ov-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 9px 10px;
   border-radius: 9px;
   transition: background 0.2s var(--ease-out-soft);
+}
+.ov-row + .ov-row {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--hairline) 55%, transparent);
 }
 .ov-row:hover {
   background: var(--hover);
@@ -300,18 +502,33 @@ function play(t: OnlineTrack): void {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 10px 12px;
   text-align: left;
 }
 .ov-main:active {
   transform: scale(0.995);
 }
 .no {
+  position: relative;
   width: 22px;
   flex: none;
   text-align: center;
   font-size: 12px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+.row-play {
+  display: none;
+  width: 14px;
+  height: 14px;
+  margin: 0 auto;
+  color: var(--accent);
+}
+.ov-row:not(.dim):hover .num {
+  display: none;
+}
+.ov-row:not(.dim):hover .row-play {
+  display: block;
 }
 .meta {
   flex: 1;
@@ -373,5 +590,17 @@ function play(t: OnlineTrack): void {
   margin: 14px 0 4px;
   font-size: 11.5px;
   color: var(--text-3);
+}
+
+@media (max-width: 760px) {
+  .panel-hint {
+    display: none;
+  }
+  .search-panel {
+    padding: 10px;
+  }
+  .src {
+    padding: 0 12px;
+  }
 }
 </style>
