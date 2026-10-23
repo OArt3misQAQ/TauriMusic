@@ -32,24 +32,6 @@ pub struct OnlineTrack {
     pub cover: Option<String>,
 }
 
-/// 在线音质档位。`High` 是各平台**免费给到匿名听众**的最高码率,不是付费档:
-/// 网易云 320k mp3、酷狗 320k mp3;QQ 与酷我匿名最高只有 128k,
-/// 因此这两个来源收到 High 也照 128k 取,不去试探需要 VIP 的文件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quality {
-    Standard,
-    High,
-}
-
-/// 前端传来的档位字符串:只认 standard,其余(含缺省)按较高处理——
-/// 取链参数更高级别时接口自己会降级到该曲目最高的免费档,不会因此拿到付费内容
-pub fn parse_quality(raw: Option<&str>) -> Quality {
-    match raw.unwrap_or("high").trim().to_ascii_lowercase().as_str() {
-        "standard" | "128" => Quality::Standard,
-        _ => Quality::High,
-    }
-}
-
 /// 在线曲目 id 的统一前缀:net: / qq: / kugou: / kuwo:
 pub fn is_online_id(id: &str) -> bool {
     split_online_id(id).is_some()
@@ -297,27 +279,21 @@ pub fn search_netease(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, Stri
     Ok(songs.iter().filter_map(parse_netease_song).collect())
 }
 
-/// 网易云 `br` 参数:匿名可取的最高免费档是 320k(level=exhigh)。
+/// 网易云 `br` 参数固定为匿名可取的最高免费档 320k(level=exhigh)。
 /// 再高(640k/999k,即无损/Hi-Res)对匿名请求一律被接口截回 320k,
 /// 试探更高档没有意义,也可能把请求语义带到付费文件上,故封顶 320000。
-fn netease_br(quality: Quality) -> &'static str {
-    match quality {
-        Quality::High => "320000",
-        Quality::Standard => "128000",
-    }
-}
+const NETEASE_BR: &str = "320000";
 
 /// 取网易云播放直链(官方试听 CDN)。CDN 只给 http,域名本身支持 https,
 /// 统一升级为 https——CSP 只放行白名单 https 源,不升级会被 WebView 拦。
 /// 返回空链即版权/VIP 受限,不做任何绕过,直接报错给前端提示。
-pub fn play_url_netease(id: &str, quality: Quality) -> Result<String, String> {
+pub fn play_url_netease(id: &str) -> Result<String, String> {
     validate_id("netease", id)?;
     let client = crate::netease_client();
     let url = "https://music.163.com/api/song/enhance/player/url";
-    let br = netease_br(quality);
     let resp = client
         .get(url)
-        .query(&[("ids", format!("[{id}]").as_str()), ("br", br)])
+        .query(&[("ids", format!("[{id}]").as_str()), ("br", NETEASE_BR)])
         .send()
         .map_err(|e| format!("取链请求失败: {e}"))?;
     let v: serde_json::Value = resp.json().map_err(|e| format!("取链响应解析失败: {e}"))?;
@@ -505,8 +481,8 @@ pub fn search_qq(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String> {
 /// 取 QQ 播放直链:vkey 对 VIP 返回空 purl,不做任何绕过。
 /// 直链统一从 isure.stream.qqmusic.qq.com 拼出(其 sip 列表含该 https 主机)。
 /// `M500`(128k mp3)之外,`M800`/`S000` 等更高档对匿名请求一律空 purl,
-/// 所以 QQ 的最高免费档就是接口默认给的那条,quality 在此来源不生效
-pub fn play_url_qq(id: &str, _quality: Quality) -> Result<String, String> {
+/// 所以接口默认给的那条就是 QQ 的最高免费档
+pub fn play_url_qq(id: &str) -> Result<String, String> {
     validate_id("qq", id)?;
     let body = serde_json::json!({
         "req": {
@@ -743,17 +719,15 @@ fn kugou_tracker_url(hash_lower: &str) -> Result<String, String> {
     restrict_media_url("kugou", &link)
 }
 
-/// 取酷狗播放直链:高音质先走搜索时记下的 HQ hash,接口拒绝(HQ 单独收费或
-/// 结果已过期)时回落到标准 hash——档位是上限而不是硬性条件,
+/// 取酷狗播放直链:优先走搜索时记下的 HQ hash(320k),接口拒绝(HQ 单独收费或
+/// 结果已过期)时回落到标准 hash——高音质是上限而不是硬性条件,
 /// 不该因为拿不到 320k 就把本来能播的曲目判死
-pub fn play_url_kugou(id: &str, quality: Quality) -> Result<String, String> {
+pub fn play_url_kugou(id: &str) -> Result<String, String> {
     validate_id("kugou", id)?;
     let std_hash = id.to_ascii_lowercase();
-    if quality == Quality::High {
-        if let Some(hq) = kugou_hq_hash(&std_hash) {
-            if let Ok(url) = kugou_tracker_url(&hq.to_ascii_lowercase()) {
-                return Ok(url);
-            }
+    if let Some(hq) = kugou_hq_hash(&std_hash) {
+        if let Ok(url) = kugou_tracker_url(&hq.to_ascii_lowercase()) {
+            return Ok(url);
         }
     }
     kugou_tracker_url(&std_hash)
@@ -942,10 +916,10 @@ pub fn search_kuwo(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String>
 
 /// 取酷我播放直链。anti.s 不做付费判断,因此必须先命中搜索结果白名单;
 /// 未在本次会话搜索结果里出现过的 id 一律拒绝,防止绕过 VIP 限制。
-/// quality 在此来源不生效:实测 anti.s 只给 128k 那份文件,给它塞 `rate`/`br`
+/// 直链固定取免费完整文件:实测 anti.s 只给 128k 那份文件,塞 `rate`/`br`
 /// 并不会升档(MINFO 里更高码率的 size 与实际下发文件对不上),
-/// 且 `br` 反而会把请求换成 30 秒试听片段,故只按原样取该曲的免费完整文件
-pub fn play_url_kuwo(id: &str, _quality: Quality) -> Result<String, String> {
+/// 且 `br` 反而会把请求换成 30 秒试听片段,故按原样取
+pub fn play_url_kuwo(id: &str) -> Result<String, String> {
     validate_id("kuwo", id)?;
     if !kuwo_is_free(id) {
         return Err("该曲目需要 VIP 或不在当前搜索结果中,无法在线播放".into());
@@ -989,12 +963,12 @@ pub fn search(source: &str, keyword: &str, page: u32) -> Result<Vec<OnlineTrack>
     }
 }
 
-pub fn play_url(source: &str, id: &str, quality: Quality) -> Result<String, String> {
+pub fn play_url(source: &str, id: &str) -> Result<String, String> {
     match source {
-        "netease" => play_url_netease(id, quality),
-        "qq" => play_url_qq(id, quality),
-        "kugou" => play_url_kugou(id, quality),
-        "kuwo" => play_url_kuwo(id, quality),
+        "netease" => play_url_netease(id),
+        "qq" => play_url_qq(id),
+        "kugou" => play_url_kugou(id),
+        "kuwo" => play_url_kuwo(id),
         _ => Err("未知在线音源".into()),
     }
 }
@@ -1235,17 +1209,6 @@ mod tests {
     }
 
     #[test]
-    fn quality_parses_to_free_tiers() {
-        assert_eq!(parse_quality(None), Quality::High);
-        assert_eq!(parse_quality(Some("standard")), Quality::Standard);
-        assert_eq!(parse_quality(Some("STANDARD")), Quality::Standard);
-        // 越界档名(无损/Hi-Res)不接受:只回落到免费上限,不去试探付费文件
-        assert_eq!(parse_quality(Some("lossless")), Quality::High);
-        assert_eq!(netease_br(Quality::High), "320000");
-        assert_eq!(netease_br(Quality::Standard), "128000");
-    }
-
-    #[test]
     fn kugou_records_hq_hash_only_when_hq_is_free() {
         // 整首免费且 HQ 也免费:记下 HQ hash,取链才可能走 320k
         let free_hq: serde_json::Value = serde_json::json!({
@@ -1317,8 +1280,8 @@ mod tests {
     fn kuwo_play_requires_search_whitelist() {
         // 未在搜索结果里出现过的 id(尤其是 VIP)一律拒绝,anti.s 本身不做付费判断
         assert!(!kuwo_is_free("226543302"));
-        assert!(play_url_kuwo("226543302", Quality::High).is_err());
-        assert!(play_url_kuwo("not-a-number", Quality::Standard).is_err());
+        assert!(play_url_kuwo("226543302").is_err());
+        assert!(play_url_kuwo("not-a-number").is_err());
     }
 
     #[test]

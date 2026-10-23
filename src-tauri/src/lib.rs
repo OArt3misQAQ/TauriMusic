@@ -1701,19 +1701,13 @@ async fn online_search(
         .map_err(|e| e.to_string())?
 }
 
-/// 取在线曲目播放直链(VIP/版权受限曲目报错)。quality 缺省按较高档处理,
-/// 各来源能免费给到多少码率由 online.rs 决定,不做任何付费试探
+/// 取在线曲目播放直链(VIP/版权受限曲目报错)。码率固定取各平台匿名免费上限,
+/// 能给到多少由 online.rs 决定,不做任何付费试探
 #[tauri::command]
-async fn online_play_url(
-    source: String,
-    id: String,
-    quality: Option<String>,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        online::play_url(&source, &id, online::parse_quality(quality.as_deref()))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+async fn online_play_url(source: String, id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || online::play_url(&source, &id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 在线封面专用客户端:禁止跟随重定向。直链已通过域名白名单,
@@ -1916,11 +1910,10 @@ async fn online_download(
     source: String,
     id: String,
     meta: OnlineDownloadMeta,
-    quality: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<ImportReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        online_download_blocking(&source, &id, &meta, quality.as_deref(), &app)
+        online_download_blocking(&source, &id, &meta, &app)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1930,7 +1923,6 @@ fn online_download_blocking(
     source: &str,
     id: &str,
     meta: &OnlineDownloadMeta,
-    quality: Option<&str>,
     app: &tauri::AppHandle,
 ) -> Result<ImportReport, String> {
     let OnlineDownloadMeta {
@@ -1939,8 +1931,8 @@ fn online_download_blocking(
         album,
         cover_url,
     } = meta;
-    // 1. 取链:与播放同一来源、同一档位,存进库的就是刚听到的那份文件
-    let url = online::play_url(source, id, online::parse_quality(quality))?;
+    // 1. 取链:与播放同一来源,存进库的就是刚听到的那份文件
+    let url = online::play_url(source, id)?;
     // 2. 下载到内存(免费档整首约 3-12MB,一次读入可接受)
     let resp = download_client()
         .get(&url)

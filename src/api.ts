@@ -39,9 +39,6 @@ export interface Track {
 /** 在线音源标识 */
 export type OnlineSource = "netease" | "qq" | "kugou" | "kuwo";
 
-/** 在线音质档:只到各平台免费给到匿名听众的上限(网易云/酷狗 320k,QQ/酷我 128k) */
-export type OnlineQuality = "standard" | "high";
-
 /** 在线曲目 id 前缀:网易云沿用历史 net:,其余用来源名 */
 const ONLINE_PREFIXES: Record<OnlineSource, string> = {
   netease: "net:",
@@ -340,13 +337,13 @@ export const api = {
   onlineSearch: (source: OnlineSource, keyword: string, page: number) =>
     invoke<OnlineTrack[]>("online_search", { source, keyword, page }),
   /** 在线曲目播放直链(版权/VIP 受限曲目 reject;后端已做域名白名单校验。
-   *  quality 只在网易云/酷狗生效,QQ 与酷我的免费上限就是 128k) */
-  onlinePlayUrl: (source: OnlineSource, id: string, quality: OnlineQuality) =>
-    invoke<string>("online_play_url", { source, id, quality }),
+   *  码率固定取各平台免费上限:网易云/酷狗 320k,QQ 与酷我 128k) */
+  onlinePlayUrl: (source: OnlineSource, id: string) =>
+    invoke<string>("online_play_url", { source, id }),
   /** 在线曲目保存到本地库:取链→下载→写标签/封面/歌词→走散装导入管线。
    *  付费曲目在取链一步就 reject,与播放同一道闸 */
-  onlineDownload: (source: OnlineSource, id: string, meta: OnlineDownloadMeta, quality: OnlineQuality) =>
-    invoke<ImportReport>("online_download", { source, id, meta, quality }),
+  onlineDownload: (source: OnlineSource, id: string, meta: OnlineDownloadMeta) =>
+    invoke<ImportReport>("online_download", { source, id, meta }),
   /** 在线曲目封面:Rust 端落盘到封面缓存后返回本地路径(无图返回 null) */
   onlineCover: (source: OnlineSource, id: string, coverUrl: string | null) =>
     invoke<string | null>("online_cover", { source, id, coverUrl }),

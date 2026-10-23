@@ -1,6 +1,6 @@
-import { computed, reactive, ref, shallowReactive } from "vue";
+import { computed, reactive, shallowReactive } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { api, type OnlineQuality, type OnlineSource, type Track } from "../api";
+import { api, type OnlineSource, type Track } from "../api";
 import { StorageKeys, storageGetString, storageSet } from "./storage";
 
 /** 播放模式:互斥单选,一键循环切换 */
@@ -56,25 +56,6 @@ export function setMode(m: PlayMode): void {
 }
 
 export const current = computed<Track | null>(() => player.queue[player.index] ?? null);
-
-/** 在线音质偏好(持久化)。档位只是上限:网易云/酷狗免费给到 320k,
- *  QQ 与酷我匿名最高 128k,后端不会为升档去试探付费文件 */
-function loadSavedQuality(): OnlineQuality {
-  return storageGetString(StorageKeys.onlineQuality, "high") === "standard"
-    ? "standard"
-    : "high";
-}
-
-export const onlineQuality = ref<OnlineQuality>(loadSavedQuality());
-
-/** 切档并持久化。清掉队列里在线曲目已缓存的直链,让下一次播放按新档重新取链;
- *  正在出声的那首不动(元素已绑定 src,换档不该打断 listening) */
-export function setOnlineQuality(q: OnlineQuality): void {
-  if (onlineQuality.value === q) return;
-  onlineQuality.value = q;
-  storageSet(StorageKeys.onlineQuality, q);
-  for (const t of player.queue) if (t.online) t.onlineUrl = undefined;
-}
 
 /** 进度超过该秒数时按"上一曲"先回到开头 */
 const PREV_RESTART_THRESHOLD = 3;
@@ -256,7 +237,7 @@ async function loadOnline(
     return;
   }
   try {
-    const url = await api.onlinePlayUrl(onlineSource, onlineId, onlineQuality.value);
+    const url = await api.onlinePlayUrl(onlineSource, onlineId);
     if (seq !== loadSeq) return;
     track.onlineUrl = url;
     a.src = url;

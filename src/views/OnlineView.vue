@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { api, onlineToTrack, type OnlineQuality, type OnlineSource, type OnlineTrack } from "../api";
-import { flash, fmtTime, onlineQuality, playTrack, setOnlineQuality } from "../stores/player";
+import { api, onlineToTrack, type OnlineSource, type OnlineTrack } from "../api";
+import { flash, fmtTime, playTrack } from "../stores/player";
 
 /** 搜索状态机:idle 无结果 / loading 请求中 / done 有结果或空 / err 失败 */
 type Phase = "idle" | "loading" | "done" | "err";
@@ -20,17 +20,6 @@ const SOURCES: { id: OnlineSource; label: string }[] = [
 ];
 const source = ref<OnlineSource>("netease");
 const sourceLabel = computed(() => SOURCES.find((s) => s.id === source.value)?.label ?? "");
-
-const QUALITIES: { id: OnlineQuality; label: string; note: string }[] = [
-  { id: "standard", label: "标准", note: "128k" },
-  { id: "high", label: "高清", note: "最高 320k" },
-];
-/** 免费上限由各平台自己决定:QQ/酷我匿名只给 128k,升档不会变(不试探付费文件) */
-const qualitySupported = computed(() => source.value === "netease" || source.value === "kugou");
-const qualityNote = computed(() => {
-  if (!qualitySupported.value) return "该音源免费上限 128k";
-  return onlineQuality.value === "high" ? "320k · 平台免费上限" : "128k · 更省流量";
-});
 
 /** 切来源:清空结果,避免把 A 平台的曲目混进 B 平台队列 */
 function selectSource(s: OnlineSource): void {
@@ -117,7 +106,6 @@ async function save(t: OnlineTrack): Promise<void> {
       t.source,
       t.id,
       { name: t.name, artist: t.artist, album: t.album, cover: t.cover },
-      onlineQuality.value,
     );
     // 内容指纹判重:同一首反复保存不会在库里堆出两份
     flash(
@@ -158,30 +146,6 @@ async function save(t: OnlineTrack): Promise<void> {
             </button>
           </div>
           <span class="panel-hint">仅免费曲目 · 无需登录</span>
-        </div>
-
-        <div class="panel-opts">
-          <span class="opt-label">音质</span>
-          <div class="quals" role="radiogroup" aria-label="在线音质">
-            <button
-              v-for="q in QUALITIES"
-              :key="q.id"
-              type="button"
-              role="radio"
-              :aria-checked="onlineQuality === q.id"
-              class="qual"
-              :class="{ on: onlineQuality === q.id }"
-              :disabled="!qualitySupported"
-              :title="
-                qualitySupported ? `${q.label} ${q.note}` : '该音源免费上限 128k,无需选择'
-              "
-              @click="setOnlineQuality(q.id)"
-            >
-              {{ q.label }}
-              <span class="qual-note">{{ q.note }}</span>
-            </button>
-          </div>
-          <span class="opt-hint">{{ qualityNote }}</span>
         </div>
 
         <form class="ov-search" @submit.prevent="search">
@@ -348,67 +312,6 @@ async function save(t: OnlineTrack): Promise<void> {
   font-size: 11.5px;
   color: var(--text-3);
   white-space: nowrap;
-}
-.panel-opts {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-.opt-label {
-  flex: none;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-3);
-}
-.opt-hint {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-.quals {
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--pill-bg);
-  border: 1px solid var(--hairline);
-}
-.qual {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  height: 26px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-2);
-  transition:
-    background 0.18s ease,
-    color 0.18s ease;
-}
-.qual:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--hover);
-}
-.qual.on {
-  background: var(--accent);
-  color: #fff;
-}
-.qual:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.qual:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: 2px;
-}
-.qual-note {
-  font-size: 10.5px;
-  font-weight: 500;
-  opacity: 0.7;
 }
 .sources {
   display: inline-flex;
@@ -768,8 +671,7 @@ async function save(t: OnlineTrack): Promise<void> {
 }
 
 @media (max-width: 760px) {
-  .panel-hint,
-  .opt-hint {
+  .panel-hint {
     display: none;
   }
   .search-panel {
@@ -777,12 +679,6 @@ async function save(t: OnlineTrack): Promise<void> {
   }
   .src {
     padding: 0 12px;
-  }
-  .qual {
-    padding: 0 10px;
-  }
-  .qual-note {
-    display: none;
   }
 }
 </style>
