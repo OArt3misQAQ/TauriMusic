@@ -10,7 +10,7 @@ import { lib, reloadLibrary, addFolder, openImportDir } from "../stores/library"
   <div v-else-if="lib.loadError" class="empty">
     <h2>曲库读取失败</h2>
     <p class="err">{{ lib.loadError }}</p>
-    <button class="primary-pill" @click="reloadLibrary">重试</button>
+    <button class="pill pill--accent primary-pill" @click="reloadLibrary">重试</button>
   </div>
   <!-- 空曲库引导:从「最近添加」页移除后由守卫统一承接(每个视图都包在 LibGate 里) -->
   <div v-else-if="lib.folders.length === 0" class="empty">
@@ -21,7 +21,7 @@ import { lib, reloadLibrary, addFolder, openImportDir } from "../stores/library"
     </svg>
     <h2>欢迎使用 TauriMusic</h2>
     <p>添加一个音乐文件夹,自动识别封面、歌词与专辑信息</p>
-    <button class="primary-pill" style="margin-top: 8px" @click="addFolder">添加音乐文件夹</button>
+    <button class="pill pill--accent primary-pill" style="margin-top: 8px" @click="addFolder">添加音乐文件夹</button>
     <div class="alt">
       <button class="link" @click="openImportDir">打开导入文件夹</button>
       <span class="dot">·</span>

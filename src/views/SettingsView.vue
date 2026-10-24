@@ -218,21 +218,21 @@ async function clearStatsConfirmed(): Promise<void> {
           <div class="opt static col-wrap">
             <span class="label">导入文件夹<small class="sub">{{ FORMAT_HINT }}</small></span>
             <div class="btns">
-              <button class="mini" @click="addFolder">添加音乐文件夹</button>
-              <button class="mini" @click="openImportDir">打开</button>
+              <button class="pill pill--hover mini" @click="addFolder">添加音乐文件夹</button>
+              <button class="pill pill--hover mini" @click="openImportDir">打开</button>
             </div>
             <p class="dir" :title="lib.importDir">{{ lib.importDir }}</p>
           </div>
           <div class="opt static">
             <span class="label">导入音乐文件<small class="sub">支持多选;导入后自动通过网易云公开接口匹配封面与歌词。APE / WMA 等非常规格式自动经内置 ffmpeg 转为无损 FLAC,原文件保持不动</small></span>
             <div class="btns">
-              <button class="mini" @click="importMusicPick">选择文件</button>
+              <button class="pill pill--hover mini" @click="importMusicPick">选择文件</button>
             </div>
           </div>
           <div class="opt static col-wrap">
             <span class="label">TMC 音乐包<small class="sub">{{ TMC_HINT }}</small></span>
             <div class="btns">
-              <button class="mini" @click="importTmcPick">导入 TMC / TMCL</button>
+              <button class="pill pill--hover mini" @click="importTmcPick">导入 TMC / TMCL</button>
             </div>
           </div>
         </div>
@@ -252,7 +252,7 @@ async function clearStatsConfirmed(): Promise<void> {
           <div class="opt static">
             <span class="label">曲库规模<small class="sub">{{ lib.tracks.length }} 首歌曲 · {{ lib.folders.length }} 个文件夹 · 重新扫描以发现外部目录的变更</small></span>
             <div class="btns">
-              <button class="mini" :disabled="lib.scanning" @click="rescan">
+              <button class="pill pill--hover mini" :disabled="lib.scanning" @click="rescan">
                 {{ lib.scanning ? `扫描中 ${lib.scanCurrent}/${lib.scanTotal}` : "重新扫描" }}
               </button>
             </div>
@@ -404,25 +404,13 @@ button.opt:active .switch.on i {
   transform: translateX(14px);
 }
 
-/* 分段控制器:轨道 + 浮起的选中段 */
+/* 分段控制器:轨道与段的基础形态走全局 .seg,这里只留方圆角与浮起白段 */
 .seg {
-  flex: none;
-  display: flex;
-  gap: 2px;
-  background: var(--pill-bg);
   border-radius: 9px;
-  padding: 2px;
 }
 .seg button {
   padding: 4.5px 13px;
   border-radius: 7px;
-  font-size: 12px;
-  color: var(--text-2);
-  white-space: nowrap;
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
-}
-.seg button:hover {
-  color: var(--text);
 }
 .seg button.on {
   background: var(--bg-2);
@@ -450,22 +438,11 @@ button.opt:active .switch.on i {
   gap: 6px;
   flex: none;
 }
+/* 迷你胶囊:基类 .pill 之上只留尺寸(悬停换底/禁用淡化走基类) */
 .mini {
   flex: none;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  background: var(--pill-bg);
-  border-radius: 999px;
   padding: 5px 14px;
-  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
-}
-.mini:hover {
-  background: var(--hover);
-}
-.mini:disabled {
-  opacity: 0.5;
-  cursor: default;
+  font-size: 12px;
 }
 .dir {
   width: 100%;

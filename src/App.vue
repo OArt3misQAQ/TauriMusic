@@ -1,30 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Sidebar from "./components/Sidebar.vue";
 import TopBar from "./components/TopBar.vue";
-import NowPlaying from "./components/NowPlaying.vue";
-import AboutModal from "./components/AboutModal.vue";
-import WelcomeModal from "./components/WelcomeModal.vue";
 import TrayPopup from "./components/TrayPopup.vue";
-import PlaylistsView from "./views/PlaylistsView.vue";
-import PlaylistDetailView from "./views/PlaylistDetailView.vue";
-import NameModal from "./components/NameModal.vue";
-import PlaylistPickerModal from "./components/PlaylistPickerModal.vue";
-import ExportModal from "./components/ExportModal.vue";
-import ImportPreviewModal from "./components/ImportPreviewModal.vue";
 import LyricsWidget from "./components/LyricsWidget.vue";
 import ContextMenu from "./components/ContextMenu.vue";
+import PlaylistsView from "./views/PlaylistsView.vue";
+import PlaylistDetailView from "./views/PlaylistDetailView.vue";
 import AlbumsView from "./views/AlbumsView.vue";
 import AlbumDetailView from "./views/AlbumDetailView.vue";
 import ArtistsView from "./views/ArtistsView.vue";
 import SongsView from "./views/SongsView.vue";
 import SearchView from "./views/SearchView.vue";
 import OnlineView from "./views/OnlineView.vue";
-import StatsView from "./views/StatsView.vue";
-import SettingsView from "./views/SettingsView.vue";
-import TrashView from "./views/TrashView.vue";
 import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
 import { exportState, importPreview, initLibrary, initDragImport } from "./stores/library";
 import { api } from "./api";
@@ -33,6 +23,19 @@ import { initStats } from "./stores/stats";
 import { initMediaBridge } from "./stores/media";
 import { current, playerFlash, coverPathOf } from "./stores/player";
 import { nameDialog, picker } from "./stores/playlists";
+
+// 低频视图与弹窗拆异步 chunk:首屏只带曲库/播放主链路。本地 chunk 毫秒级加载,
+// 不挂 loading 占位避免布局闪动;与 <Transition mode="out-in"> + <component :is> 兼容
+const NowPlaying = defineAsyncComponent(() => import("./components/NowPlaying.vue"));
+const AboutModal = defineAsyncComponent(() => import("./components/AboutModal.vue"));
+const WelcomeModal = defineAsyncComponent(() => import("./components/WelcomeModal.vue"));
+const NameModal = defineAsyncComponent(() => import("./components/NameModal.vue"));
+const PlaylistPickerModal = defineAsyncComponent(() => import("./components/PlaylistPickerModal.vue"));
+const ExportModal = defineAsyncComponent(() => import("./components/ExportModal.vue"));
+const ImportPreviewModal = defineAsyncComponent(() => import("./components/ImportPreviewModal.vue"));
+const StatsView = defineAsyncComponent(() => import("./views/StatsView.vue"));
+const SettingsView = defineAsyncComponent(() => import("./views/SettingsView.vue"));
+const TrashView = defineAsyncComponent(() => import("./views/TrashView.vue"));
 
 const views = {
   albums: AlbumsView,
@@ -53,6 +56,29 @@ const view = computed(() => views[ui.view]);
 const pageKey = computed(
   () => `${ui.view}|${ui.albumKey ?? ""}|${ui.artist ?? ""}|${ui.playlistId ?? ""}`,
 );
+
+const contentEl = ref<HTMLElement | null>(null);
+
+/** 视图切换后把焦点送到新视图的 h1:键盘/读屏用户不必从页首逐个 Tab 摸位置。
+ *  侧栏搜索框键入触发的视图切换不抢焦点,否则打字直接被打断 */
+function focusViewTitle(): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+  // mode="out-in" 下旧页离场后才换新页,异步视图还要等 chunk 加载:
+  // 逐帧等标题出现(本地加载毫秒级,轮询只是兜底)
+  let frames = 0;
+  const step = (): void => {
+    const h1 = contentEl.value?.querySelector<HTMLElement>("h1");
+    if (h1) {
+      // tabindex=-1 使 h1 可编程聚焦但不进 Tab 序;读屏会播报标题,不画焦点环
+      h1.setAttribute("tabindex", "-1");
+      h1.focus({ preventScroll: true });
+      return;
+    }
+    if (++frames < 90) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
 
 const ambientImg = computed(() => {
   // 氛围背景全屏铺开,用大图档;模糊之下小图也够,但大图切歌时的淡入更细腻。
@@ -140,8 +166,8 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
     <div class="shell">
       <TopBar />
       <Sidebar />
-      <main class="content">
-        <Transition name="page" mode="out-in">
+      <main ref="contentEl" class="content">
+        <Transition name="page" mode="out-in" @enter="focusViewTitle">
           <component :is="view" :key="pageKey" />
         </Transition>
       </main>

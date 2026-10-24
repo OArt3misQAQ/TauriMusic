@@ -28,6 +28,18 @@ function onPurge(e: TrashEntry): void {
 function onEmpty(): void {
   if (confirm("__empty__")) void purgeTrash([]);
 }
+
+/** 行聚焦时:Enter/Space 还原(行的主操作),Delete 彻底删除(两段确认) */
+function onRowKey(e: KeyboardEvent, entry: TrashEntry): void {
+  if (e.target !== e.currentTarget) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    onRestore(entry);
+  } else if (e.key === "Delete") {
+    e.preventDefault();
+    onPurge(entry);
+  }
+}
 </script>
 
 <template>
@@ -36,10 +48,10 @@ function onEmpty(): void {
       <h1>回收站</h1>
       <div class="right">
         <span class="count">{{ entries.length }} 首 · 保留 30 天</span>
-        <button v-if="entries.length" class="ghost-pill" @click="onRestoreAll">全部还原</button>
+        <button v-if="entries.length" class="pill pill--hover ghost-pill" @click="onRestoreAll">全部还原</button>
         <button
           v-if="entries.length"
-          class="ghost-pill danger"
+          class="pill pill--hover ghost-pill danger"
           :title="confirmingId === '__empty__' ? '再次点击确认清空(不可恢复)' : '清空回收站'"
           @click="onEmpty"
         >
@@ -48,7 +60,7 @@ function onEmpty(): void {
       </div>
     </header>
 
-    <div v-if="entries.length === 0" class="empty">
+    <div v-if="entries.length === 0" class="empty slim">
       <svg class="icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4.5 7h15M9.5 7V5.2c0-.66.54-1.2 1.2-1.2h2.6c.66 0 1.2.54 1.2 1.2V7M6.5 7l.8 11.3c.06.77.7 1.2 1.4 1.2h6.6c.7 0 1.34-.43 1.4-1.2L18.5 7" />
         <path d="M10 11v5M14 11v5" />
@@ -58,7 +70,14 @@ function onEmpty(): void {
     </div>
 
     <div v-else class="list">
-      <div v-for="e in entries" :key="e.track.id" class="row">
+      <div
+        v-for="e in entries"
+        :key="e.track.id"
+        class="row"
+        role="button"
+        tabindex="0"
+        @keydown="onRowKey($event, e)"
+      >
         <div class="main">
           <div class="t" :title="e.track.title">{{ e.track.title }}</div>
           <div class="a">
@@ -86,43 +105,28 @@ function onEmpty(): void {
   align-items: center;
   gap: 10px;
 }
+/* 幽灵胶囊:基类 .pill 之上只留尺寸,悬停换底走 .pill--hover */
 .ghost-pill {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
-  background: var(--pill-bg);
-  border-radius: 999px;
   padding: 6px 16px;
-  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
-}
-.ghost-pill:hover {
-  background: var(--hover);
+  font-size: 12.5px;
 }
 .ghost-pill.danger:hover {
   background: var(--active);
   color: var(--accent);
 }
 
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+/* 紧凑空态(.empty.slim)之上再收间距:用顶部留白代替整屏高度 */
+.empty.slim {
   gap: 4px;
+  height: auto;
   padding-top: 16vh;
   text-align: center;
 }
-.empty .icon {
-  color: var(--text-3);
+.empty.slim .icon {
   margin-bottom: 10px;
 }
-.empty h2 {
-  font-size: 17px;
-  font-weight: 700;
-}
-.empty p {
+.empty.slim p {
   font-size: 13px;
-  color: var(--text-2);
 }
 
 .list {
@@ -139,6 +143,11 @@ function onEmpty(): void {
 }
 .row:hover {
   background: var(--hover);
+}
+/* 键盘可达:焦点环对齐全局 accent 约定(行上 Enter=还原,Delete=彻底删除) */
+.row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 .main {
   flex: 1;
@@ -169,11 +178,10 @@ function onEmpty(): void {
   flex: none;
   font-variant-numeric: tabular-nums;
 }
+/* 还原/彻底删除:基类 .pill 之上只留尺寸与专属配色(圆角/字重/底色走基类) */
 .pill {
   flex: none;
   font-size: 12px;
-  font-weight: 600;
-  border-radius: 999px;
   padding: 5px 13px;
   transition: background 0.2s ease, color 0.2s ease, transform 0.35s var(--ease-spring);
 }

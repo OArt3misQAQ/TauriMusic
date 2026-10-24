@@ -104,10 +104,10 @@ const packingHint = computed(() => {
       </template>
       <template v-else-if="exportState.phase === 'ready'">
         <button class="ghost" @click="closeExport">取消</button>
-        <button class="primary-pill" @click="confirmExport">导出…</button>
+        <button class="pill pill--accent primary-pill" @click="confirmExport">导出…</button>
       </template>
       <template v-else-if="exportState.phase === 'done'">
-        <button class="primary-pill" @click="closeExport">完成</button>
+        <button class="pill pill--accent primary-pill" @click="closeExport">完成</button>
       </template>
     </footer>
   </Modal>

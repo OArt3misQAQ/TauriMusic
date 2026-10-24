@@ -198,7 +198,7 @@ function chartLabel(key: string): string {
     <header class="view-head">
       <h1>听歌统计</h1>
       <div class="right">
-        <div class="scope-tabs" role="tablist" aria-label="统计范围">
+        <div class="seg seg--round" role="tablist" aria-label="统计范围">
           <button role="tab" :aria-selected="scope === 'local'" :class="{ on: scope === 'local' }" @click="scope = 'local'">本地</button>
           <button role="tab" :aria-selected="scope === 'online'" :class="{ on: scope === 'online' }" @click="scope = 'online'">在线</button>
         </div>
@@ -206,13 +206,13 @@ function chartLabel(key: string): string {
       </div>
     </header>
 
-    <div v-if="statsLoadError" class="empty">
+    <div v-if="statsLoadError" class="empty slim">
       <h2>统计数据读取失败</h2>
       <button class="mini ghost" @click="retry">重试</button>
     </div>
-    <div v-else-if="!stats" class="empty"><h2>正在加载统计数据…</h2></div>
+    <div v-else-if="!stats" class="empty slim"><h2>正在加载统计数据…</h2></div>
 
-    <div v-else-if="!hasData" class="empty">
+    <div v-else-if="!hasData" class="empty slim">
       <svg class="icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
         <path d="M5 20V10M12 20V4M19 20v-7" />
       </svg>
@@ -329,52 +329,7 @@ function chartLabel(key: string): string {
   font-size: 12px;
   color: var(--text-3);
 }
-.scope-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--pill-bg);
-  border: 1px solid var(--hairline);
-}
-.scope-tabs button {
-  height: 24px;
-  padding: 0 14px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-  transition:
-    background 0.18s ease,
-    color 0.18s ease;
-}
-.scope-tabs button:hover {
-  color: var(--text);
-}
-.scope-tabs button.on {
-  background: var(--accent);
-  color: #fff;
-}
-.empty {
-  height: 70%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-2);
-}
-.empty .icon {
-  color: var(--text-3);
-  margin-bottom: 6px;
-}
-.empty h2 {
-  font-size: 17px;
-  color: var(--text);
-}
-.empty p {
-  font-size: 13.5px;
-}
+/* 空态:紧凑变体 .empty.slim 承载尺寸,这里不再有 scoped 空态样式 */
 
 .body {
   display: flex;

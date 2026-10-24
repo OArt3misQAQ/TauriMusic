@@ -19,10 +19,10 @@ function shuffleAll(): void {
         <h1>歌曲</h1>
         <div class="right">
           <span class="count">{{ allSongs.length }} 首</span>
-          <button class="match-btn ghost" :disabled="allSongs.length === 0" @click="shuffleAll">
+          <button class="pill match-btn ghost" :disabled="allSongs.length === 0" @click="shuffleAll">
             随机播放全部
           </button>
-          <button class="match-btn" :disabled="lib.matching" @click="enrichAllNetease">
+          <button class="pill pill--accent match-btn" :disabled="lib.matching" @click="enrichAllNetease">
             {{ lib.matching ? "匹配中…" : "全部在线匹配" }}
           </button>
         </div>
@@ -53,28 +53,25 @@ function shuffleAll(): void {
   align-items: center;
   gap: 12px;
 }
+/* 主行动胶囊:基类 .pill 之上只留尺寸与按压/禁用细节(底色/圆角/字重走基类) */
 .match-btn {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 999px;
   padding: 6px 16px;
+  font-size: 12.5px;
   transition: background 0.2s ease, transform 0.35s var(--ease-spring), opacity 0.2s ease;
 }
 .match-btn:hover:not(:disabled) {
   background: var(--accent-hover);
 }
+.match-btn.ghost:hover:not(:disabled) {
+  background: var(--hover);
+}
+/* 禁用态不换悬停底色(基类变体未区分禁用),与原样式一致;ghost 无 accent 底不受影响 */
+.match-btn:not(.ghost):disabled:hover {
+  background: var(--accent);
+}
 .match-btn:active:not(:disabled) {
   transform: scale(0.97);
   transition-duration: 0.09s;
-}
-.match-btn.ghost {
-  color: var(--text);
-  background: var(--pill-bg);
-}
-.match-btn.ghost:hover:not(:disabled) {
-  background: var(--hover);
 }
 .match-btn:disabled {
   opacity: 0.55;

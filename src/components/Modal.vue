@@ -1,24 +1,103 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { nextTick, onMounted, onUnmounted, onUpdated, ref, useId } from "vue";
 
 const emit = defineEmits<{ close: [] }>();
 
-function onKey(e: KeyboardEvent): void {
-  if (e.key === "Escape") emit("close");
+const modalEl = ref<HTMLDivElement | null>(null);
+/** 标题 id 供 aria-labelledby 引用:标题是各弹窗槽内容里的 h2,挂载后统一编号 */
+const titleId = useId();
+const labelledby = ref<string | undefined>(undefined);
+/** 打开前的焦点元素:关闭时归还,键盘流不断 */
+let lastActive: Element | null = null;
+
+/** 焦点圈内可 Tab 的元素;隐藏元素(v-show/过渡残影)剔除 */
+function focusables(): HTMLElement[] {
+  const root = modalEl.value;
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => el.offsetWidth > 0 || el.offsetHeight > 0);
 }
-onMounted(() => window.addEventListener("keydown", onKey));
-onUnmounted(() => window.removeEventListener("keydown", onKey));
+
+/** 标题解析:About 弹窗在"关于/感谢信"两视图间切换,标题元素会换,更新后重挂 id */
+function resolveTitle(): void {
+  const title = modalEl.value?.querySelector<HTMLElement>("h1, h2, [data-modal-title]");
+  if (title) {
+    title.id = titleId;
+    labelledby.value = titleId;
+  } else {
+    labelledby.value = undefined;
+  }
+}
+
+function onKey(e: KeyboardEvent): void {
+  if (e.key === "Escape") {
+    emit("close");
+    return;
+  }
+  if (e.key !== "Tab") return;
+  // 简单焦点圈禁:Tab/Shift+Tab 在弹窗首尾循环,焦点不落到遮罩后的界面
+  const root = modalEl.value;
+  if (!root) return;
+  const list = focusables();
+  const active = document.activeElement;
+  const inside = active instanceof HTMLElement && root.contains(active);
+  if (list.length === 0) {
+    // 打包中等无焦点元素的弹窗:焦点钉在容器上
+    e.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = list[0]!;
+  const last = list[list.length - 1]!;
+  if (e.shiftKey) {
+    if (!inside || active === first) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else if (!inside || active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+onMounted(() => {
+  lastActive = document.activeElement;
+  window.addEventListener("keydown", onKey);
+  void nextTick(() => {
+    resolveTitle();
+    // 输入型弹窗(重命名)会自己聚焦输入框:焦点已在弹窗内就不抢
+    const active = document.activeElement;
+    const root = modalEl.value;
+    if (root && !(active instanceof HTMLElement && root.contains(active))) {
+      root.focus({ preventScroll: true });
+    }
+  });
+});
+onUpdated(resolveTitle);
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKey);
+  if (lastActive instanceof HTMLElement && lastActive.isConnected) {
+    lastActive.focus({ preventScroll: true });
+  }
+});
 </script>
 
 <template>
   <div class="overlay" @click.self="emit('close')">
-    <div class="modal">
+    <div ref="modalEl" class="modal" role="dialog" aria-modal="true" :aria-labelledby="labelledby" tabindex="-1">
       <slot />
     </div>
   </div>
 </template>
 
 <style scoped>
+.modal:focus {
+  /* 容器焦点是弹窗打开时的落点,只作读屏锚点,不画焦点环(内部 Tab 导航不受影响) */
+  outline: none;
+}
 .overlay {
   position: absolute;
   inset: 0;

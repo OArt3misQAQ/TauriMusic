@@ -184,6 +184,12 @@ img {
   font-size: 13px;
 }
 
+/* 视图标题的程序化聚焦(App.vue 视图切换落点):只作读屏锚点不画焦点环。
+   标题不带 tabindex 不进 Tab 序,此规则不会波及键盘导航 */
+h1:focus {
+  outline: none;
+}
+
 .empty {
   height: 70%;
   display: flex;
@@ -204,22 +210,135 @@ img {
   margin-bottom: 6px;
 }
 
-.primary-pill {
-  background: var(--accent);
-  color: #fff;
+/* ===== 公共基元:胶囊按钮 =====
+   各视图的胶囊按钮(主行动/幽灵/迷你/选择条)收敛到同一基类,配色全走令牌,
+   三套皮肤自动跟随;scoped 里只留尺寸与变体微调。悬停反馈分两派——
+   换底色(.pill--hover)与提亮度(详情页动作组在 scoped 自行声明,
+   避免悬停底色盖掉"确认删除"的实底切换);透明底用 .pill--flat。 */
+.pill {
   border-radius: 999px;
-  padding: 8px 22px;
-  font-size: 14px;
   font-weight: 600;
+  color: var(--text);
+  background: var(--pill-bg);
   transition: background 0.2s ease, transform 0.35s var(--ease-spring);
 }
 
-.primary-pill:hover {
+.pill--hover:hover {
+  background: var(--hover);
+}
+
+.pill--flat {
+  background: transparent;
+}
+
+/* 透明底胶囊悬停同样换底:选择条按钮的悬停反馈 */
+.pill--flat:hover {
+  background: var(--hover);
+}
+
+.pill--accent {
+  background: var(--accent);
+  color: #fff;
+}
+
+.pill--accent:hover {
   background: var(--accent-hover);
+}
+
+.pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.primary-pill {
+  padding: 8px 22px;
+  font-size: 14px;
 }
 
 .primary-pill:active {
   transition-duration: 0.09s;
+}
+
+/* ===== 公共基元:分段控件 =====
+   轨道 + 选中段;设置页是方圆角轨道 + 浮起白段(默认形态),
+   统计页口径切换是全圆角轨道 + accent 实底段,差异用修饰类承载 */
+.seg {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--pill-bg);
+}
+
+.seg button {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.seg button:hover {
+  color: var(--text);
+}
+
+.seg--round {
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+}
+
+.seg--round button {
+  height: 24px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.seg--round button.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ===== 公共基元:紧凑空态 =====
+   统计/回收站等次级页面的空态:标题与间距比全局 .empty 收一档 */
+.empty.slim {
+  gap: 8px;
+}
+
+.empty.slim h2 {
+  font-size: 17px;
+}
+
+.empty.slim p {
+  font-size: 13.5px;
+}
+
+/* ===== 公共基元:详情页返回按钮(专辑/歌单详情共用) ===== */
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 4px 10px 4px 4px;
+  margin-bottom: 14px;
+  border-radius: 7px;
+  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
+}
+
+.back-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.back-btn:hover {
+  background: var(--hover);
+}
+
+.back-btn:active {
+  transform: scale(0.97);
+  transition-duration: 0.1s;
 }
 
 /* ===== 液态玻璃外观 =====

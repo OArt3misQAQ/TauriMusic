@@ -35,14 +35,14 @@ const cards = computed(() =>
         <h1>播放列表</h1>
         <div class="right">
           <span class="count">{{ lib.playlists.length }} 个</span>
-          <button class="new-btn" @click="askCreatePlaylist">新建播放列表</button>
+          <button class="pill pill--accent new-btn" @click="askCreatePlaylist">新建播放列表</button>
         </div>
       </header>
 
       <div v-if="sorted.length === 0" class="empty">
         <h2>还没有播放列表</h2>
         <p>把喜欢的歌收进自己的歌单,可自由命名、导出为 TMCL 分享或备份</p>
-        <button class="primary-pill" style="margin-top: 8px" @click="askCreatePlaylist">
+        <button class="pill pill--accent primary-pill" style="margin-top: 8px" @click="askCreatePlaylist">
           新建播放列表
         </button>
       </div>
@@ -91,17 +91,10 @@ const cards = computed(() =>
   align-items: center;
   gap: 14px;
 }
+/* 主行动胶囊:基类 .pill 之上只留尺寸与按压细节 */
 .new-btn {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 999px;
   padding: 6px 16px;
-  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
-}
-.new-btn:hover {
-  background: var(--accent-hover);
+  font-size: 12.5px;
 }
 .new-btn:active {
   transform: scale(0.97);

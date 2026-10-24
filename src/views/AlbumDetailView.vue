@@ -65,7 +65,7 @@ function onDeleteAlbum(): void {
 
 <template>
   <div v-if="album" class="view">
-    <button class="back" @click="go('albums')">
+    <button class="back-btn" @click="go('albums')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14.5 5.5 8 12l6.5 6.5" />
       </svg>
@@ -82,17 +82,17 @@ function onDeleteAlbum(): void {
         <div class="artist" @click="gotoArtist">{{ album.artist }}</div>
         <div class="sub">{{ meta }}</div>
         <div class="btns">
-          <button class="primary-pill" @click="playTracks(album.tracks, 0)">播放</button>
-          <button class="ghost-pill" @click="shuffleAll">随机播放</button>
+          <button class="pill pill--accent primary-pill" @click="playTracks(album.tracks, 0)">播放</button>
+          <button class="pill ghost-pill" @click="shuffleAll">随机播放</button>
           <button
-            class="ghost-pill"
+            class="pill ghost-pill"
             title="整张专辑打包成单个 .tmca 专辑包(7z 存储模式,打包接近拷贝速度)"
             @click="onExportAlbum"
           >
             导出专辑
           </button>
           <button
-            class="ghost-pill"
+            class="pill ghost-pill"
             title="通过网易云公开接口补全封面与歌词(仅元数据,不影响本地文件播放)"
             :disabled="enriching"
             @click="onEnrich"
@@ -100,7 +100,7 @@ function onDeleteAlbum(): void {
             {{ enriching ? "匹配中…" : "在线匹配" }}
           </button>
           <button
-            class="ghost-pill danger"
+            class="pill ghost-pill danger"
             :class="{ confirm: confirmingDelete }"
             :title="confirmingDelete ? '再次点击确认删除整张专辑(音频移入回收站)' : '删除这张专辑(音频移入回收站)'"
             @click="onDeleteAlbum"
@@ -116,7 +116,7 @@ function onDeleteAlbum(): void {
   <div v-else class="view">
     <div class="empty">
       <h2>未找到该专辑</h2>
-      <button class="primary-pill" @click="go('albums')">返回专辑列表</button>
+      <button class="pill pill--accent primary-pill" @click="go('albums')">返回专辑列表</button>
     </div>
   </div>
 </template>
@@ -135,31 +135,6 @@ function onDeleteAlbum(): void {
 .view :deep(.tl.virtual) {
   flex: 1;
   min-height: 0;
-}
-
-.back {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  width: fit-content;
-  color: var(--accent);
-  font-size: 13.5px;
-  font-weight: 600;
-  padding: 4px 10px 4px 4px;
-  margin-bottom: 14px;
-  border-radius: 7px;
-  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
-}
-.back svg {
-  width: 17px;
-  height: 17px;
-}
-.back:hover {
-  background: var(--hover);
-}
-.back:active {
-  transform: scale(0.97);
-  transition-duration: 0.1s;
 }
 
 .detail-head {
@@ -229,17 +204,20 @@ h1 {
   gap: 12px;
   margin-top: 16px;
 }
+/* 幽灵胶囊:基类 .pill 之上只留尺寸与悬停亮度反馈(悬停不换底,
+   保留"确认删除"的描边警示不被悬停底色盖掉) */
 .ghost-pill {
-  background: var(--pill-bg);
-  color: var(--text);
-  border-radius: 999px;
   padding: 8px 22px;
   font-size: 14px;
-  font-weight: 600;
   transition: filter 0.2s ease, transform 0.35s var(--ease-spring);
 }
 .ghost-pill:hover {
   filter: brightness(1.06);
+}
+/* 在线匹配的禁用态原样式不做淡化,基类的禁用变灰在此关掉 */
+.ghost-pill:disabled {
+  opacity: 1;
+  cursor: pointer;
 }
 .ghost-pill.danger.confirm {
   color: var(--danger);

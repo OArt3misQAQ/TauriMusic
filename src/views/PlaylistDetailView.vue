@@ -63,6 +63,19 @@ function playRow(index: number): void {
   playTracks(playable.value, Math.max(0, pos));
 }
 
+/** 行聚焦时:Enter/Space 播放,Delete 对应右键菜单的"从列表移除"(不删文件)。
+ *  行内上移/下移按钮聚焦时按键不冒泡,必须限定事件源是行自身 */
+function onRowKey(e: KeyboardEvent, index: number): void {
+  if (e.target !== e.currentTarget) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    playRow(index);
+  } else if (e.key === "Delete") {
+    e.preventDefault();
+    onRemove(index);
+  }
+}
+
 /** 歌单内歌曲右键菜单 */
 function rowMenu(e: MouseEvent, index: number): void {
   const r = resolved.value[index];
@@ -122,7 +135,7 @@ function rowMenu(e: MouseEvent, index: number): void {
 
 <template>
   <div v-if="pl" class="view">
-    <button class="back" @click="go('playlists')">
+    <button class="back-btn" @click="go('playlists')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m14.5 6-6 6 6 6" />
       </svg>
@@ -144,14 +157,14 @@ function rowMenu(e: MouseEvent, index: number): void {
           {{ pl.entries.length }} 首<template v-if="missing"> · {{ missing }} 首文件缺失</template>
         </div>
         <div class="btns">
-          <button class="primary-pill" :disabled="!playable.length" @click="playAll">播放</button>
-          <button class="ghost-pill" :disabled="!playable.length" @click="shuffleAll">随机播放</button>
-          <button class="ghost-pill" title="导出为 TMCL(7z:音乐文件+playlist.json)" @click="exportPlaylist(pl)">
+          <button class="pill pill--accent primary-pill" :disabled="!playable.length" @click="playAll">播放</button>
+          <button class="pill ghost-pill" :disabled="!playable.length" @click="shuffleAll">随机播放</button>
+          <button class="pill ghost-pill" title="导出为 TMCL(7z:音乐文件+playlist.json)" @click="exportPlaylist(pl)">
             导出 TMCL
           </button>
-          <button class="ghost-pill" @click="askRenamePlaylist(pl)">重命名</button>
+          <button class="pill ghost-pill" @click="askRenamePlaylist(pl)">重命名</button>
           <button
-            class="ghost-pill danger"
+            class="pill ghost-pill danger"
             :class="{ confirm: confirmingDeletePl }"
             :title="confirmingDeletePl ? '再次点击确认删除' : '仅删除列表,不删除音乐文件(不可恢复)'"
             @click="onDeletePlaylist"
@@ -173,8 +186,11 @@ function rowMenu(e: MouseEvent, index: number): void {
         :key="r.entry.path + '-' + r.index"
         class="row"
         :class="{ missing: !r.track }"
+        role="button"
+        tabindex="0"
         @click="playRow(r.index)"
         @contextmenu="rowMenu($event, r.index)"
+        @keydown="onRowKey($event, r.index)"
       >
         <span class="idx">{{ r.index + 1 }}</span>
         <span class="cov">
@@ -216,37 +232,12 @@ function rowMenu(e: MouseEvent, index: number): void {
   <div v-else class="view">
     <div class="empty">
       <h2>未找到该播放列表</h2>
-      <button class="primary-pill" @click="go('playlists')">返回播放列表</button>
+      <button class="pill pill--accent primary-pill" @click="go('playlists')">返回播放列表</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.back {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  width: fit-content;
-  color: var(--accent);
-  font-size: 13.5px;
-  font-weight: 600;
-  padding: 4px 10px 4px 4px;
-  margin-bottom: 14px;
-  border-radius: 7px;
-  transition: background 0.2s ease, transform 0.35s var(--ease-spring);
-}
-.back svg {
-  width: 17px;
-  height: 17px;
-}
-.back:hover {
-  background: var(--hover);
-}
-.back:active {
-  transform: scale(0.97);
-  transition-duration: 0.1s;
-}
-
 .detail-head {
   display: flex;
   gap: 28px;
@@ -296,21 +287,15 @@ function rowMenu(e: MouseEvent, index: number): void {
   flex-wrap: wrap;
   gap: 10px;
 }
+/* 幽灵胶囊:基类 .pill 之上只留尺寸与悬停亮度反馈(悬停不换底,
+   保留"确认删除"实底切换不被悬停底色盖掉) */
 .ghost-pill {
-  background: var(--pill-bg);
-  color: var(--text);
-  border-radius: 999px;
   padding: 8px 20px;
   font-size: 13.5px;
-  font-weight: 600;
   transition: filter 0.2s ease, transform 0.35s var(--ease-spring);
 }
 .ghost-pill:hover {
   filter: brightness(1.06);
-}
-.ghost-pill:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 .ghost-pill.danger {
   color: var(--danger);
@@ -318,6 +303,11 @@ function rowMenu(e: MouseEvent, index: number): void {
 .ghost-pill.confirm {
   background: var(--danger);
   color: #fff;
+}
+/* 播放按钮的禁用(空列表)原样式不做淡化,基类的禁用变灰在此关掉 */
+.primary-pill:disabled {
+  opacity: 1;
+  cursor: pointer;
 }
 
 .rows {
@@ -340,6 +330,11 @@ function rowMenu(e: MouseEvent, index: number): void {
 }
 .row:hover {
   background: var(--hover);
+}
+/* 键盘可达:焦点环对齐全局 accent 约定 */
+.row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 .row.missing {
   opacity: 0.55;
@@ -432,7 +427,9 @@ function rowMenu(e: MouseEvent, index: number): void {
   opacity: 0;
   transition: opacity 0.2s ease;
 }
-.row:hover .ops {
+.row:hover .ops,
+/* 悬停才现身的操作组:键盘焦点进入时同样现身 */
+.row:focus-within .ops {
   opacity: 1;
 }
 .op {
