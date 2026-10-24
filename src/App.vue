@@ -116,7 +116,9 @@ onMounted(() => {
     return;
   }
   if (isLyricsWidget) {
-    // 桌面歌词小窗:上次开启过则随主窗口一起显示(位置由小窗自己恢复)
+    // 桌面歌词小窗:挂 lyrics-host 类让 body 画布底色让位给透明(style.css 枚举了
+    // 全部主题×皮肤组合),歌词才真正浮在桌面上;上次开启过则随主窗口一起显示
+    document.documentElement.classList.add("lyrics-host");
     if (localStorage.getItem("tm-lyrics-on") === "1") void api.showLyricsWindow();
     return;
   }

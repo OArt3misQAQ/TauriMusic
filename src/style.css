@@ -1105,3 +1105,28 @@ html[data-skin="paper"] .tray-card {
   box-shadow: none;
 }
 
+
+/* ===== 透明宿主窗口(托盘面板 / 桌面歌词) =====
+   body 的画布底色只属于主窗口;这两个窗口挂 host 类后把 html/body 的底色
+   让给透明,内容才真正浮在桌面上。必须逐组合压过玻璃皮肤的实底
+   (html.dark.glass body 与之同特异性,枚举取胜,与书写顺序无关) */
+html.tray-host body,
+html.lyrics-host body,
+html.glass.tray-host,
+html.glass.tray-host body,
+html.glass.lyrics-host,
+html.glass.lyrics-host body,
+html.dark.tray-host body,
+html.dark.lyrics-host body,
+html.dark.glass.tray-host,
+html.dark.glass.tray-host body,
+html.dark.glass.lyrics-host,
+html.dark.glass.lyrics-host body {
+  background: transparent;
+}
+
+/* 纸纹颗粒是主窗口的印刷材质,在透明宿主窗口里会变成浮在桌面上的一层雾 */
+html[data-skin="paper"].tray-host body::after,
+html[data-skin="paper"].lyrics-host body::after {
+  content: none;
+}
