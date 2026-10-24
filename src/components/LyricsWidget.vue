@@ -72,23 +72,72 @@ const nextLine = computed(() => {
   return state.value.artist || "未在播放";
 });
 
-/* 细进度线:position/duration,缓动跟随 */
-const pct = computed(() =>
-  state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
-);
+/* 进度可拖:拖动中本地预览,松手才提交——主窗口的 media 桥解析 "seek:<秒>";
+   状态广播约 1Hz,不屏蔽会把滑块每秒拽回旧位置。提交后保留预览直到位置追平,
+   避免松手瞬间闪回旧位置 */
+const seeking = ref(false);
+const seekPreview = ref<number | null>(null);
+const shownPos = computed(() => seekPreview.value ?? state.value.position);
+const pct = computed(() => {
+  const d = state.value.duration;
+  return d > 0 ? (Math.min(shownPos.value, d) / d) * 100 : 0;
+});
+function fmtTime(s: number): string {
+  const v = Number.isFinite(s) && s > 0 ? Math.floor(s) : 0;
+  return `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}`;
+}
+const seekingTime = computed(() => `${fmtTime(shownPos.value)} / ${fmtTime(state.value.duration)}`);
+const showSeekTime = computed(() => seeking.value || seekPreview.value !== null);
+let seekSettleTimer = 0;
+function onSeekInput(e: Event): void {
+  seeking.value = true;
+  seekPreview.value = Number((e.target as HTMLInputElement).value);
+  window.clearTimeout(seekSettleTimer);
+}
+function onSeekCommit(e: Event): void {
+  const v = Number((e.target as HTMLInputElement).value);
+  seeking.value = false;
+  seekPreview.value = v;
+  if (state.value.duration > 0) void emit("media://action", `seek:${v}`);
+  // 广播回来前的兜底:1.5s 内仍未追平也要交还真实进度,防止预览永久滞留
+  window.clearTimeout(seekSettleTimer);
+  seekSettleTimer = window.setTimeout(() => {
+    seekPreview.value = null;
+  }, 1500);
+}
 
-/* 字号自适应:窗口高度摊给可见行(大字/译文/下一句)。
-   固定开销(padding 22 + 行距 8 + 进度线 4.5 + 余量)是**像素**不是行数,
-   按行数折算会在小窗时把字算大(总高超窗 → 上下切行);
-   译文/下一句的系数 = 字号比(0.52/0.4) × 行高比(1.3/1.22) */
+/* 字号预算的固定开销(像素):上 padding 10 + 底部控制带 74
+   + 三行时的行间 gap 12 + 进度条命中区 14。底部控制带 = 胶囊 54 + 底距 12
+   + 与歌词间隔 8,由 .lyr-root 的 padding-bottom 预留,胶囊悬停浮现时不再压住歌词 */
+const FIXED_OVERHEAD = 110;
+
+/* 歌词大小档位:档位是**字号上限**,窗高按最坏三行(大字 + 译文 + 下一句)刚好容纳,
+   两行歌词不会再被撑得比档位更大——旧版统一的 72px 上限让中/大两档在多数曲目下
+   顶到同一字号,档位形同虚设。手动把窗拉得比档位更高时上限按比例放宽,
+   保留「拉高窗口 = 放大歌词」的手感 */
+const LYRIC_TIERS = {
+  s: { h: 188, fs: 32 },
+  m: { h: 208, fs: 40 },
+  // 48 是默认 720 宽(内容区 676)能整行放下 14 个汉字的极限,再大就只剩省略号
+  l: { h: 228, fs: 48 },
+} as const;
+type LyricTier = keyof typeof LYRIC_TIERS;
+function savedTier(): LyricTier {
+  const v = localStorage.getItem("tm-lyrics-scale");
+  return v === "s" || v === "l" ? v : "m";
+}
+const lyricTier = ref<LyricTier>(savedTier());
 const winH = ref(window.innerHeight);
+/* 字号自适应:窗口高度摊给可见行(大字/译文/下一句)。
+   固定开销是**像素**不是行数,按行数折算会在小窗时把字算大(总高超窗 → 上下切行);
+   译文/下一句的系数 = 字号比(0.52/0.4) × 行高比(1.3/1.22) */
 const fontSize = computed(() => {
   const rows = 1 + (mainTrans.value ? 0.554 : 0) + (nextLine.value ? 0.426 : 0);
-  // 固定开销(像素):padding 22 + 行间 gap 8 + 进度线 4.5 + 余量——控制胶囊
-  // 已绝对定位悬浮,不占布局,不计入
-  const FIXED_OVERHEAD = 44;
-  const fs = (Math.max(winH.value, 100) - FIXED_OVERHEAD) / (rows * 1.22);
-  return Math.max(16, Math.min(72, fs));
+  const tier = LYRIC_TIERS[lyricTier.value];
+  const fit = (Math.max(winH.value, 100) - FIXED_OVERHEAD) / (rows * 1.22);
+  // 档位给上限;手动拉高时上限同比放宽,保留放大能力
+  const cap = tier.fs * Math.max(1, winH.value / tier.h);
+  return Math.max(16, Math.min(fit, cap, 72));
 });
 function onResize(): void {
   winH.value = window.innerHeight;
@@ -132,18 +181,19 @@ const progressFill = computed(() => {
   const c = customColor.value;
   return `linear-gradient(90deg, color-mix(in srgb, var(--text) 80%, transparent), ${c || "var(--accent)"})`;
 });
+const knobStyle = computed(() => ({
+  left: `${pct.value}%`,
+  background: customColor.value || "var(--accent)",
+}));
 function onColorStorage(e: StorageEvent): void {
   if (e.key === "tm-lyrics-color") applyColorFromStorage();
   if (e.key === "tm-lyrics-scale") void applyScale();
 }
 
-/* 歌词大小档位(设置页三档):字号按窗口高度自适应,放大字必然重新溢出,
-   所以档位实际调整的是小窗高度——字随窗高自动变大,「永不溢出」恒成立。
-   宽度与左上角位置保持不动,设置页改动经 storage 事件实时生效 */
-const LYRIC_TIER_H = { s: 140, m: 190, l: 250 } as const;
+/* 档位落地:切换档位只改窗高(宽度与左上角保持不动),字号上限由 lyricTier 决定 */
 async function applyScale(): Promise<void> {
-  const saved = localStorage.getItem("tm-lyrics-scale") ?? "m";
-  const h = (LYRIC_TIER_H as Record<string, number>)[saved] ?? LYRIC_TIER_H.m;
+  lyricTier.value = savedTier();
+  const h = LYRIC_TIERS[lyricTier.value].h;
   // 先钉字号基准再改窗:隐藏窗口的 setSize 不派发 resize 事件,
   // 不主动同步 winH 的话字号仍按旧窗高计算,新窗里直接溢出切行
   winH.value = h;
@@ -188,9 +238,21 @@ onMounted(async () => {
   cleanups.push(
     await listen<WidgetState>("media://state", (e) => {
       state.value = e.payload;
+      // 真实进度追平预览值后交还状态源;拖动中不打断用户
+      if (
+        !seeking.value
+        && seekPreview.value !== null
+        && Math.abs(e.payload.position - seekPreview.value) < 1.5
+      ) {
+        window.clearTimeout(seekSettleTimer);
+        seekPreview.value = null;
+      }
     }),
     await listen<WidgetLyrics>("media://lyrics", (e) => {
       lyrics.value = e.payload;
+      // 切歌清掉上一首的进度预览
+      window.clearTimeout(seekSettleTimer);
+      seekPreview.value = null;
     }),
     await win.onMoved((e) => onMovedSave(e.payload.x, e.payload.y)),
   );
@@ -215,6 +277,7 @@ onUnmounted(() => {
   cleanups.forEach((fn) => fn());
   cleanups = [];
   window.clearTimeout(moveTimer);
+  window.clearTimeout(seekSettleTimer);
   window.removeEventListener("keydown", onKey);
   window.removeEventListener("storage", onColorStorage);
   window.removeEventListener("resize", onResize);
@@ -236,14 +299,34 @@ onUnmounted(() => {
       </p>
       <p v-if="mainTrans" class="line-trans" :style="{ color: transColor }">{{ mainTrans }}</p>
       <p v-if="nextLine" class="line-next" :style="{ color: nextColor }">{{ nextLine }}</p>
-      <div class="progress" aria-hidden="true">
-        <div class="progress-fill" :style="{ width: pct + '%', background: progressFill }"></div>
+      <!-- 进度线即 seek 控件:14px 透明命中区包住细线,悬停/拖动加粗并浮出圆点;
+           用原生 range 当命中层,INPUT 属于可交互元素,不会被 deep 拖窗区吃掉 -->
+      <div class="progress" :class="{ 'is-seeking': showSeekTime }">
+        <div class="track">
+          <div class="progress-fill" :style="{ width: pct + '%', background: progressFill }"></div>
+        </div>
+        <span v-if="state.duration > 0" class="knob" aria-hidden="true" :style="knobStyle"></span>
+        <input
+          class="seek"
+          type="range"
+          aria-label="播放进度"
+          min="0"
+          :max="state.duration || 1"
+          step="0.1"
+          title="点击或拖动调整播放进度"
+          :value="shownPos"
+          :disabled="!state.duration"
+          @input="onSeekInput"
+          @change="onSeekCommit"
+        />
       </div>
     </div>
 
-    <!-- 控制胶囊:悬停浮现,只留传输与关闭——音量跟随主窗口,字号固定最大档 -->
+    <!-- 控制胶囊:悬停浮现,只留传输与关闭——音量与字号都跟随主窗口/设置页 -->
     <div class="lyr-ctl">
-      <span class="song" :title="state.title">{{ state.title || "未在播放" }}</span>
+      <span class="song" :title="state.title">
+        {{ showSeekTime ? seekingTime : state.title || "未在播放" }}
+      </span>
       <span class="vline"></span>
       <button class="cbtn" title="上一曲" @click="act('prev')">
         <svg viewBox="0 0 24 24" fill="currentColor">
@@ -295,7 +378,8 @@ onUnmounted(() => {
   flex-direction: column;
   justify-content: center;
   gap: 8px;
-  padding: 10px 22px 12px;
+  /* 底部 74 = 胶囊 54 + 底距 12 + 间隔 8:控制带是专属空带,歌词在其上方居中 */
+  padding: 10px 22px 74px;
   user-select: none;
 }
 
@@ -361,14 +445,30 @@ onUnmounted(() => {
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
-/* 细进度线:贴在文字块下的 2.5px 圆角线,随播放推进 */
+/* 进度条:视觉仍是贴在文字块下的细线,但整个 14px 高的区域都可点击/拖拽。
+   细线本身只有 2.5px,直接当命中区几乎抓不住;加粗与圆点只在悬停/拖动时浮现 */
 .progress {
+  position: relative;
   width: min(60%, 320px);
+  height: 14px;
+  cursor: pointer;
+}
+.track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
   height: 2.5px;
+  transform: translateY(-50%);
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 20%, transparent);
   overflow: hidden;
-  margin-top: 2px;
+  transition: height 0.16s ease;
+}
+.progress:hover .track,
+.progress.is-seeking .track,
+.progress:focus-within .track {
+  height: 5px;
 }
 .progress-fill {
   height: 100%;
@@ -376,10 +476,49 @@ onUnmounted(() => {
   background: linear-gradient(90deg, color-mix(in srgb, var(--text) 80%, transparent), var(--accent));
   transition: width 0.25s linear;
 }
+/* 拖动中进度要跟手,不能吃 0.25s 的缓动 */
+.progress.is-seeking .progress-fill {
+  transition: none;
+}
+.knob {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.18s ease;
+}
+.progress:hover .knob,
+.progress.is-seeking .knob,
+.progress:focus-within .knob {
+  opacity: 1;
+}
+/* 透明原生 range 只负责命中与键盘操作,视觉完全由 track/knob 承担 */
+.seek {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+.seek:disabled {
+  cursor: default;
+}
 
-/* ===== 控制胶囊:绝对定位悬浮于底缘,不占布局空间——
-   占流式布局会把字号预算吃掉 52px,歌词被挤出窗(「操控栏不全」的根因)。
-   默认隐身且不接指针(hidden 不挡拖拽),悬停窗口才浮现可点 ===== */
+/* ===== 控制胶囊:绝对定位悬停在底缘的专属控制带里——
+   歌词区用 padding-bottom 让出 74px,胶囊默认隐身且不接指针
+   (不挡拖拽),悬停窗口才浮现可点 ===== */
 .lyr-ctl {
   position: absolute;
   bottom: 12px;
@@ -406,12 +545,14 @@ onUnmounted(() => {
   pointer-events: auto;
   transform: translate(-50%, 0);
 }
-/* 当前歌曲名:胶囊行首,超长省略 */
+/* 胶囊行首:平时是歌曲名(超长省略),拖动进度时临时显示时间。
+   固定宽度:歌名与时间切换时胶囊不跳宽,传输键不会被挤着左右移动 */
 .song {
+  width: 110px;
   font-size: 12px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
-  max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

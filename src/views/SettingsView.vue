@@ -221,7 +221,7 @@ async function clearStatsConfirmed(): Promise<void> {
             </span>
           </div>
           <div class="opt static">
-            <span class="label">歌词大小<small class="sub">调整桌面歌词小窗高度,字号随之自适应</small></span>
+            <span class="label">歌词大小<small class="sub">档位决定字号上限,窗高随之适配;进度线可点击或拖动跳转</small></span>
             <div class="seg">
               <button
                 v-for="t in lyricSizeOptions"
