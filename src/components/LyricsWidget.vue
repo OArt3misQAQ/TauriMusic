@@ -77,6 +77,23 @@ const pct = computed(() =>
   state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
 );
 
+/* 字号自适应:按当前可见行数(大字/译文/下一句)把窗口高度摊给各行,
+   行多则字小、行少则字大——固定按 vh 放大时四行内容需求约 260px,
+   默认 190px 窗高会把上下行齐齐切掉(overflow:hidden 不救人)。
+   大字为基准 1,译文 0.52、下一句 0.4(近似旧版视觉比例),进度线与
+   行间距按固定开销折进系数;resize 时重算 */
+const winH = ref(window.innerHeight);
+const fontSize = computed(() => {
+  const rows = 1 + (mainTrans.value ? 0.52 : 0) + (nextLine.value ? 0.4 : 0);
+  // 上下 padding(22px)+行间距+进度线:固定开销折算成 0.55 行大字的竖向空间
+  const overhead = 0.55;
+  const usable = Math.max(winH.value - 24, 60);
+  return Math.max(18, Math.min(64, usable / (rows + overhead)));
+});
+function onResize(): void {
+  winH.value = window.innerHeight;
+}
+
 /* 歌词颜色:默认跟随皮肤(正文取主题文字色、暖端取品牌 accent 令牌)——
    浅色主题下整句变墨色系,白壁纸才读得清;用户在设置页调配自定色后,
    自定色成为绝对主色(渐变两端都由它派生,译文/下一句/进度线同步跟随),
@@ -156,6 +173,7 @@ onMounted(async () => {
   applyColorFromStorage();
   window.addEventListener("keydown", onKey);
   window.addEventListener("storage", onColorStorage);
+  window.addEventListener("resize", onResize);
   // 恢复上次位置(物理像素,多显示器换算交给系统)
   try {
     const saved = localStorage.getItem("tm-lyrics-pos");
@@ -173,12 +191,13 @@ onUnmounted(() => {
   window.clearTimeout(moveTimer);
   window.removeEventListener("keydown", onKey);
   window.removeEventListener("storage", onColorStorage);
+  window.removeEventListener("resize", onResize);
 });
 </script>
 
 <template>
-  <!-- 整窗可拖(deep 规则下按钮自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
-  <div class="lyr-root" data-tauri-drag-region="deep">
+  <!-- 整窗可拖(deep 规则下按钮自动豁免);窗口全透明,字号按可见行数自适应 -->
+  <div class="lyr-root" data-tauri-drag-region="deep" :style="{ '--fs': fontSize + 'px' }">
     <div class="lyr-lines" data-tauri-drag-region="deep">
       <!-- 渐变与字色由 mainStyle/transColor 提供(皮肤令牌或用户自定色);
            闲置态不绑背景内联,让 .idle 的去渐变降白生效 -->
@@ -262,12 +281,11 @@ onUnmounted(() => {
   gap: 4px;
   overflow: hidden;
 }
-/* 当前句:大字重 + 品牌色渐变填充,字号固定在原滑杆上限档。
-   渐变由 mainFill 内联注入(默认取皮肤 accent 令牌,用户自定色覆盖暖端),
-   闲置态不绑内联让 .idle 的去渐变降白生效。
+/* 当前句:大字重 + 品牌色渐变填充。字号按可见行数自适应(--fs,组件注入):
+   行多字小、行少字大,任何窗高都完整可见,不再被 overflow:hidden 切行。
    填充透明化后 text-shadow 会透进字形,可读性用单层柔影兜底 */
 .line-main {
-  font-size: clamp(34px, 25.6vh, 61px);
+  font-size: var(--fs);
   font-weight: 800;
   line-height: 1.22;
   text-align: center;
@@ -284,8 +302,9 @@ onUnmounted(() => {
 /* 对照译文:介于大字与预览行之间,不用渐变,不与大字抢主次;
    颜色经 transColor 内联(主题文字色或自定色派生),投影兜底对比 */
 .line-trans {
-  font-size: clamp(25px, 16vh, 38px);
+  font-size: calc(var(--fs) * 0.52);
   font-weight: 650;
+  line-height: 1.3;
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
@@ -301,8 +320,9 @@ onUnmounted(() => {
 }
 /* 下一句:小一号的次级色,预告走向;颜色经 nextColor 内联 */
 .line-next {
-  font-size: clamp(20px, 12.8vh, 30px);
+  font-size: calc(var(--fs) * 0.4);
   font-weight: 650;
+  line-height: 1.3;
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
