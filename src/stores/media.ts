@@ -70,10 +70,15 @@ async function broadcastLyrics(): Promise<void> {
 }
 
 let bridgeInited = false;
+/** HMR dispose 用:本模块注册的 Tauri 事件反注册与 watch 停止函数 */
+let unlisteners: (() => void)[] = [];
+let stopWatches: (() => void)[] = [];
 
 export function initMediaBridge(): void {
   if (bridgeInited) return; // 与 initTheme/initSkin 同理:重挂载/HMR 时监听器不能叠加
   bridgeInited = true;
+  // listen 返回的是 Promise,反注册函数到手后归集,供 HMR dispose 统一摘除
+  const keepUnlisten = (un: () => void) => unlisteners.push(un);
   // 托盘面板/系统控制中心的按钮 → 播放器动作
   void listen<string>("media://action", (e) => {
     // 带参动作:进度拖拽 "seek:<秒>"(托盘进度条可拖)
@@ -110,56 +115,79 @@ export function initMediaBridge(): void {
         prev();
         break;
     }
-  });
+  }).then(keepUnlisten);
 
   // 托盘面板打开时主动索要一次当前状态(事件是增量的,面板错过历史)
   void listen("media://state-request", () => {
     broadcast();
     void broadcastLyrics();
-  });
+  }).then(keepUnlisten);
 
   // 曲目切换 → 元数据与封面(封面缓存是本地绝对路径,Rust 侧解码缩略图)
   let lastTrackId = "";
-  watch(
-    () => current.value?.id ?? "",
-    (id) => {
-      if (!id || id === lastTrackId) return;
-      lastTrackId = id;
-      const t = current.value;
-      if (!t) return;
-      void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
-      broadcast();
-      void broadcastLyrics();
-    },
+  stopWatches.push(
+    watch(
+      () => current.value?.id ?? "",
+      (id) => {
+        if (!id || id === lastTrackId) return;
+        lastTrackId = id;
+        const t = current.value;
+        if (!t) return;
+        void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
+        broadcast();
+        void broadcastLyrics();
+      },
+    ),
   );
 
   // 在线封面异步到达:刷新 SMTC 元数据与托盘面板,让封面"先占位后点亮"
-  watch(
-    () => (current.value ? onlineCovers.get(current.value.id) : undefined),
-    () => {
-      const t = current.value;
-      if (!t) return;
-      void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
-      broadcast();
-    },
+  stopWatches.push(
+    watch(
+      () => (current.value ? onlineCovers.get(current.value.id) : undefined),
+      () => {
+        const t = current.value;
+        if (!t) return;
+        void api.smtcSetTrack(t.title, t.artist, coverPathOf(t), t.duration);
+        broadcast();
+      },
+    ),
   );
 
   // 播放/暂停状态
-  watch(
-    () => player.playing,
-    (playing) => {
-      void api.smtcSetStatus(playing);
-      broadcast();
-    },
+  stopWatches.push(
+    watch(
+      () => player.playing,
+      (playing) => {
+        void api.smtcSetStatus(playing);
+        broadcast();
+      },
+    ),
   );
 
   // 进度:节流到约 1 次/秒(SMTC 时间轴、托盘进度都不需要更高频)
   let lastSent = -1;
-  watch(() => player.position, (pos) => {
-    if (Math.abs(pos - lastSent) >= 1) {
-      lastSent = pos;
-      void api.smtcSetPosition(pos, player.duration);
-      broadcast();
-    }
+  stopWatches.push(
+    watch(
+      () => player.position,
+      (pos) => {
+        if (Math.abs(pos - lastSent) >= 1) {
+          lastSent = pos;
+          void api.smtcSetPosition(pos, player.duration);
+          broadcast();
+        }
+      },
+    ),
+  );
+}
+
+// 开发期 HMR 热替换后,旧模块的 Tauri 事件监听与 watch 仍存活:
+// 同一次切歌/动作会被新旧两座桥各执行一遍(SMTC 双写、托盘双响应)。
+// 清理手段与 player.ts 的 dispose 惯例同理
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    for (const un of unlisteners) un();
+    unlisteners = [];
+    for (const stop of stopWatches) stop();
+    stopWatches = [];
   });
 }

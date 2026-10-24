@@ -144,31 +144,56 @@ function armFlush(): void {
 }
 
 let statsInited = false;
+/** HMR dispose 用:本模块注册的 watch 停止函数 */
+let stopWatches: (() => void)[] = [];
+
+function onVisibilityChange(): void {
+  if (document.hidden) void flush(true);
+}
+
+function onBeforeUnload(): void {
+  void flush(true);
+}
 
 /** 应用启动时接线:监听播放状态、定时冲刷、页面隐藏兜底 */
 export function initStats(): void {
   if (statsInited) return; // 重挂载/HMR 时监听器不能叠加
   statsInited = true;
-  watch(
-    () => player.playing,
-    (playing) => {
-      if (playing) beginSpanIfNeeded();
-      else endSpan(true);
-    },
-  );
-  // 切曲:旧曲按完整会话结算(可能计一次播放),新曲立即开始计时
-  watch(
-    () => current.value?.id ?? null,
-    () => {
-      endSpan(true);
-      beginSpanIfNeeded();
-    },
-  );
+  stopWatches = [
+    watch(
+      () => player.playing,
+      (playing) => {
+        if (playing) beginSpanIfNeeded();
+        else endSpan(true);
+      },
+    ),
+    // 切曲:旧曲按完整会话结算(可能计一次播放),新曲立即开始计时
+    watch(
+      () => current.value?.id ?? null,
+      () => {
+        endSpan(true);
+        beginSpanIfNeeded();
+      },
+    ),
+  ];
   armFlush();
   // 隐藏到托盘/退出前兜底冲刷(force 立即落盘):把丢失窗口压到最小
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) void flush(true);
-  });
-  window.addEventListener("beforeunload", () => void flush(true));
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("beforeunload", onBeforeUnload);
   beginSpanIfNeeded();
+}
+
+// 开发期 HMR 热替换后,旧模块的冲刷 interval/watch/document 监听仍存活:
+// 不清理会双计听歌时长、双份冲刷(清理手段与 player.ts 的 dispose 惯例同理)
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (flushTimer) {
+      window.clearInterval(flushTimer);
+      flushTimer = 0;
+    }
+    for (const stop of stopWatches) stop();
+    stopWatches = [];
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  });
 }

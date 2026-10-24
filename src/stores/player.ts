@@ -64,8 +64,10 @@ let audio: HTMLAudioElement | null = null;
 /** 连续加载失败计数,成功播放后清零(防全坏队列无限跳曲) */
 let errorStreak = 0;
 
-/** 实际播放过的下标历史:prev() 据此回到"真正播过的那首"(随机模式下尤其重要) */
-let playHistory: number[] = [];
+/** 实际播放过的曲目 id 历史:prev() 据此回到"真正播过的那首"(随机模式下尤其重要)。
+ *  存 id 而非队列下标:删除/重排会让下标整体漂移,每处队列变更都得重映射,
+ *  漏一处(purgeDeleted 重建队列)prev 就跳到别的歌;id 不随位置变化天然稳定 */
+let playHistory: string[] = [];
 /** 洗牌袋:当前队列下标的一个随机排列,播完一轮才重新洗牌(避免有放回抽样的重复感) */
 let bag: number[] = [];
 /** 袋子对应的队列引用:队列被替换(playTracks/删除清理)时自动重建 */
@@ -109,9 +111,11 @@ if (import.meta.hot) {
   });
 }
 
-function pushHistory(idx: number): void {
-  if (idx < 0) return;
-  playHistory.push(idx);
+/** 记下"即将离开"的当前曲目:调用点都在切歌前,统一从 player.index 取 id */
+function pushHistory(): void {
+  const id = player.queue[player.index]?.id;
+  if (id === undefined) return;
+  playHistory.push(id);
   if (playHistory.length > 200) playHistory.shift();
 }
 
@@ -329,6 +333,7 @@ export function purgeDeleted(ids: string[]): void {
     return;
   }
   // 非当前播放:重建队列并尽量落在原来的曲子上
+  // (播放历史存 id,这里不必重映射;被删曲的 id 由 prev() 回退时自动跳过)
   const before = current.value?.id ?? "";
   player.queue = kept;
   let idx = kept.findIndex((t) => t.id === before);
@@ -450,7 +455,7 @@ export function next(manual = true): void {
   // 随机模式且队列已预洗:顺序推进洗好的顺序(与队列抽屉显示一致),
   // 手动切歌到队尾时回卷,自然播完一轮则停下
   if (mode === "shuffle" && queueShuffled) {
-    pushHistory(player.index);
+    pushHistory();
     const nx = player.index + 1;
     if (nx < n) {
       player.index = nx;
@@ -477,7 +482,7 @@ export function next(manual = true): void {
       }
     }
   }
-  pushHistory(player.index);
+  pushHistory();
   player.index = idx;
   load(player.queue[idx]);
 }
@@ -491,12 +496,21 @@ export function prev(): void {
     return;
   }
   // 优先回到实际播放过的上一首(随机模式下这是唯一正确的语义);
-  // 历史为空时退化为队列顺序的上一首
-  let idx = playHistory.pop();
-  if (idx === undefined || idx < 0 || idx >= n) {
-    idx = player.index - 1;
-    if (idx < 0) idx = player.mode === "loop" ? n - 1 : 0;
+  // 历史里的曲目可能已被删出队列:跳过继续往前回退,不能让一条失效记录卡死
+  while (playHistory.length > 0) {
+    const id = playHistory.pop() as string;
+    const idx = player.queue.findIndex((t) => t.id === id);
+    if (idx >= 0) {
+      // 队列极端场景可能存在重复 id(同一文件入队两份):findIndex 恒命中靠前的
+      // 那份,两者内容一致听感无差,不值得为位置配对引入额外复杂度
+      player.index = idx;
+      load(player.queue[idx]);
+      return;
+    }
   }
+  // 历史为空(或全部失效)时退化为队列顺序的上一首
+  let idx = player.index - 1;
+  if (idx < 0) idx = player.mode === "loop" ? n - 1 : 0;
   player.index = idx;
   load(player.queue[idx]);
 }
@@ -575,7 +589,7 @@ export function upcomingTracks(): { track: Track; queueIndex: number }[] {
 export function jumpToQueueIndex(i: number): void {
   const q = player.queue;
   if (i < 0 || i >= q.length || i === player.index) return;
-  pushHistory(player.index);
+  pushHistory();
   // 随机模式:被点到的曲子必须从洗牌袋剔除,否则本轮还会再抽到它
   if (player.mode === "shuffle" && bagQueue === q) {
     bag = bag.filter((x) => x !== i);
@@ -593,10 +607,8 @@ export function removeFromQueue(i: number): void {
   const oldRef = q;
   player.queue = q.filter((_, k) => k !== i);
   if (i < player.index) player.index -= 1;
-  // 历史里的下标同步左移,并剔除被移除曲自身,否则"上一曲"会回到错误的歌
-  playHistory = playHistory
-    .filter((h) => h !== i)
-    .map((h) => (h > i ? h - 1 : h));
+  // 播放历史存曲目 id,不随下标漂移,无需重映射;被移除曲的 id 留在历史里,
+  // prev() 回退时 findIndex 找不到会自动跳过它继续往前找
   if (bagQueue === oldRef) {
     // 袋子还对应旧队列:剔除被移除的下标,并把大于它的整体左移一号,延续本轮
     bag = bag.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));

@@ -312,7 +312,7 @@ export async function importDropped(paths: string[]): Promise<void> {
   }
   const before = new Set(lib.tracks.map((t) => t.id));
   const rest = paths.filter(
-    (p) => ![".tmc", ".tmcl", ".tmca"].some((e) => p.toLowerCase().endsWith(e)),
+    (p) => !PACKAGE_EXTS.some((e) => p.toLowerCase().endsWith(e)),
   );
   const parts: string[] = [];
   if (rest.length) {
@@ -374,6 +374,10 @@ function keysOfNewTracks(before: Set<string>): Set<string> {
 
 /** 导入通用收尾:对新增曲目自动在线匹配封面与歌词,有更新则重扫并刷新提示;quiet 时无新增不提示 */
 async function enrichNewTracks(before: Set<string>, doneMsg: string, quiet = false): Promise<void> {
+  // 包导入收尾与 library-changed 事件的补全可能并发:两路各开 3 个 worker 合计 6,
+  // 会顶穿"3 是限流安全值"。已在匹配中则本轮整段跳过,与 enrichAllNetease 同口径——
+  // 新增曲目的补全由下一轮导入/事件触发的匹配兜底,宁晚一步也不超限流
+  if (lib.matching) return;
   const keys = keysOfNewTracks(before);
   if (keys.size === 0) {
     if (!quiet) flashStatus(doneMsg);
@@ -396,7 +400,7 @@ export async function enrichAllNetease(): Promise<void> {
   const keys = new Set<string>();
   for (const t of lib.tracks) {
     if (!t.cover || !t.lrcPath) {
-      keys.add(`${t.albumArtist || t.artist}\u{1}${t.album}`);
+      keys.add(keyOf(t));
     }
   }
   if (keys.size === 0) {
@@ -692,19 +696,36 @@ export async function openImportDir(): Promise<void> {
   }
 }
 
+/** 扫描进行中又收到 rescan 请求的"待补跑"标记 */
+let rescanDirty = false;
+
 export async function rescan(): Promise<void> {
-  if (lib.scanning) return;
+  // 并发请求不能静默丢弃:调用方(导入差集/匹配收尾)依赖扫描后的新数据。
+  // scanning 期间只置 dirty 标志,由在跑的这一轮收尾时补扫;循环收尾而非递归
+  // 调用自身,防重入
+  if (lib.scanning) {
+    rescanDirty = true;
+    return;
+  }
   lib.scanning = true;
-  lib.scanCurrent = 0;
-  lib.scanTotal = 0;
   try {
-    const r = await api.scan();
-    // 无变化(启动扫描的常态)时跳过全量赋值,避免 computed 重建与视图重渲
-    if (r.report.added || r.report.updated || r.report.removed) {
-      applyLibraryData(JSON.parse(r.library) as { tracks: Track[]; folders: string[]; playlists?: Playlist[]; trash?: TrashEntry[] });
+    for (;;) {
+      rescanDirty = false;
+      lib.scanCurrent = 0;
+      lib.scanTotal = 0;
+      try {
+        const r = await api.scan();
+        // 无变化(启动扫描的常态)时跳过全量赋值,避免 computed 重建与视图重渲
+        if (r.report.added || r.report.updated || r.report.removed) {
+          applyLibraryData(JSON.parse(r.library) as { tracks: Track[]; folders: string[]; playlists?: Playlist[]; trash?: TrashEntry[] });
+        }
+      } catch (err) {
+        console.error("扫描失败", err);
+      }
+      // dirty 置位发生在上面的 await 期间;此后到 finally 之间全同步,
+      // 不会再有新请求插入,检查一轮即可安全退出
+      if (!rescanDirty) break;
     }
-  } catch (err) {
-    console.error("扫描失败", err);
   } finally {
     lib.scanning = false;
   }
@@ -721,7 +742,9 @@ export async function addFolder(): Promise<void> {
     flashStatus(`添加文件夹失败: ${String(err)}`);
     return;
   }
-  if (!lib.folders.includes(path)) lib.folders.push(path);
+  // lib 是 shallowReactive:嵌套数组原地 push 不触发依赖,必须整体替换才能让
+  // 依赖 folders 的视图(设置页文件夹列表等)更新
+  if (!lib.folders.includes(path)) lib.folders = [...lib.folders, path];
   await rescan();
   const added = lib.tracks.filter((t) => !before.has(t.id)).length;
   await enrichNewTracks(before, `已添加文件夹 · 新增 ${added} 首`);

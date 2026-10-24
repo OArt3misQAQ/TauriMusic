@@ -59,6 +59,29 @@ export const ui = reactive<UiState>({
 
 const systemDark = ref(false);
 
+// matchMedia 每次调用都返回新对象,监听的挂载与摘除必须用同一引用,故提升到模块级
+const darkMql = window.matchMedia("(prefers-color-scheme: dark)");
+
+function prefersDark(): boolean {
+  return darkMql.matches;
+}
+
+/** HMR dispose 用:本模块挂到 window 上的具名监听(匿名函数无法 removeEventListener) */
+function onSystemDarkChange(): void {
+  systemDark.value = prefersDark();
+}
+
+function onThemeStorage(e: StorageEvent): void {
+  if (e.key !== StorageKeys.theme) return;
+  const v = e.newValue;
+  if (v === "light" || v === "dark" || v === "system") ui.themeMode = v;
+}
+
+function onSkinStorage(e: StorageEvent): void {
+  if (e.key !== StorageKeys.skin) return;
+  ui.skin = e.newValue === "paper" ? "paper" : "glass";
+}
+
 /** 首次启动:未同意过使用声明时弹出 */
 export function initWelcome(): void {
   ui.welcomeOpen = storageGetString(StorageKeys.welcome, "") !== "1";
@@ -68,10 +91,6 @@ export function initWelcome(): void {
 export function acceptWelcome(): void {
   storageSet(StorageKeys.welcome, "1");
   ui.welcomeOpen = false;
-}
-
-function prefersDark(): boolean {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
 export function go(view: ViewName): void {
@@ -109,6 +128,18 @@ let themeInited = false;
 // 结果是 html 上的 dark/glass 类冻结在旧值——皮肤/主题切换看起来完全失效
 const uiScope = effectScope(true);
 
+// 开发期 HMR 热替换后,旧模块的 matchMedia/storage 监听与 uiScope 内的 effect
+// 仍存活:不清理会主题/皮肤切一次响应两遍。uiScope 必须 stop,
+// 否则旧 effect 永远挂着(清理手段与 player.ts 的 dispose 惯例同理)
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    darkMql.removeEventListener("change", onSystemDarkChange);
+    window.removeEventListener("storage", onThemeStorage);
+    window.removeEventListener("storage", onSkinStorage);
+    uiScope.stop();
+  });
+}
+
 export function initTheme(): void {
   if (themeInited) return; // HMR/重复调用防抖,避免监听与 effect 叠加
   themeInited = true;
@@ -123,17 +154,11 @@ export function initTheme(): void {
   }
 
   systemDark.value = prefersDark();
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    systemDark.value = prefersDark();
-  });
+  darkMql.addEventListener("change", onSystemDarkChange);
 
   // 托盘面板是另一个 WebView:主窗口切换主题时靠 storage 事件同步过来。
   // storage 事件只在"别的文档"里触发,写入方自己收不到,没有回声问题
-  window.addEventListener("storage", (e) => {
-    if (e.key !== StorageKeys.theme) return;
-    const v = e.newValue;
-    if (v === "light" || v === "dark" || v === "system") ui.themeMode = v;
-  });
+  window.addEventListener("storage", onThemeStorage);
 
   uiScope.run(() => {
     watchEffect(() => {
@@ -164,10 +189,7 @@ export function initSkin(): void {
   ui.skin = saved === "paper" ? "paper" : "glass";
 
   // 皮肤同样跨窗口同步(见 initTheme 里的说明)
-  window.addEventListener("storage", (e) => {
-    if (e.key !== StorageKeys.skin) return;
-    ui.skin = e.newValue === "paper" ? "paper" : "glass";
-  });
+  window.addEventListener("storage", onSkinStorage);
 
   uiScope.run(() => {
     watchEffect(() => {

@@ -22,6 +22,15 @@ export function initShortcuts(): void {
   document.addEventListener("click", onBlurAway, true);
 }
 
+// 开发期 HMR 热替换后旧模块的键盘/点击监听仍存活:
+// 不摘除会一次按键触发两遍快捷键(清理手段与 player.ts 的 dispose 惯例同理)
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    window.removeEventListener("keydown", onKey);
+    document.removeEventListener("click", onBlurAway, true);
+  });
+}
+
 function onBlurAway(e: MouseEvent): void {
   const t = e.target as HTMLElement | null;
   if (t?.closest("input, textarea, select, [contenteditable]")) return;
