@@ -194,7 +194,7 @@ async function clearStatsConfirmed(): Promise<void> {
           </div>
           <div class="opt">
             <button class="lyr-toggle" @click="toggleLyrics">
-              <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,颜色可在右侧调配,关闭主窗口仍在</small></span>
+              <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,右侧可调配颜色(浅色壁纸建议选深色),关闭主窗口仍在</small></span>
               <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
             </button>
             <span class="lyr-color" title="歌词颜色">

@@ -77,19 +77,38 @@ const pct = computed(() =>
   state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
 );
 
-/* 歌词颜色:默认跟随皮肤(暖端取品牌 accent 令牌),用户在设置页调配后
-   覆盖暖端。storage 事件实时跟随设置页改动(跨窗口同源共享) */
+/* 歌词颜色:默认跟随皮肤(正文取主题文字色、暖端取品牌 accent 令牌)——
+   浅色主题下整句变墨色系,白壁纸才读得清;用户在设置页调配自定色后,
+   自定色成为绝对主色(渐变两端都由它派生,译文/下一句/进度线同步跟随),
+   不再从白色起笔——用户选了红就要看到红。storage 事件实时跟随设置页 */
 const customColor = ref("");
 function applyColorFromStorage(): void {
   const v = localStorage.getItem("tm-lyrics-color") ?? "";
   customColor.value = /^#[0-9a-fA-F]{6}$/.test(v) ? v : "";
 }
-const mainFill = computed(() => {
+const mainStyle = computed(() => {
   const c = customColor.value;
-  const warm = c
-    ? `color-mix(in srgb, ${c} 45%, #fff) 58%, ${c} 130%`
-    : `color-mix(in srgb, var(--accent) 42%, #fff) 58%, color-mix(in srgb, var(--accent) 82%, #fff) 130%`;
-  return `linear-gradient(100deg, #ffffff 34%, ${warm})`;
+  if (!state.value.playing) {
+    // 闲置:去渐变降亮示意停机;自定色时沿用同色系
+    return c ? { WebkitTextFillColor: `color-mix(in srgb, ${c} 42%, #9a9a9a)` } : {};
+  }
+  return {
+    background: c
+      ? `linear-gradient(100deg, color-mix(in srgb, ${c} 25%, #fff) 10%, ${c} 90%)`
+      : `linear-gradient(100deg, var(--text) 22%, color-mix(in srgb, var(--accent) 42%, var(--text)) 58%, color-mix(in srgb, var(--accent) 82%, var(--text)) 130%)`,
+  };
+});
+const transColor = computed(() => {
+  const c = customColor.value;
+  return c ? `color-mix(in srgb, ${c} 78%, #fff)` : `color-mix(in srgb, var(--text) 90%, transparent)`;
+});
+const nextColor = computed(() => {
+  const c = customColor.value;
+  return c ? `color-mix(in srgb, ${c} 52%, #fff)` : `color-mix(in srgb, var(--text) 66%, transparent)`;
+});
+const progressFill = computed(() => {
+  const c = customColor.value;
+  return `linear-gradient(90deg, color-mix(in srgb, var(--text) 80%, transparent), ${c || "var(--accent)"})`;
 });
 function onColorStorage(e: StorageEvent): void {
   if (e.key === "tm-lyrics-color") applyColorFromStorage();
@@ -161,19 +180,19 @@ onUnmounted(() => {
   <!-- 整窗可拖(deep 规则下按钮自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
   <div class="lyr-root" data-tauri-drag-region="deep">
     <div class="lyr-lines" data-tauri-drag-region="deep">
-      <!-- 渐变底色由 mainFill 提供(皮肤令牌或用户自定色);闲置态不绑内联,
-           让 .idle 的去渐变降白生效 -->
+      <!-- 渐变与字色由 mainStyle/transColor 提供(皮肤令牌或用户自定色);
+           闲置态不绑背景内联,让 .idle 的去渐变降白生效 -->
       <p
         class="line-main"
         :class="{ idle: !state.playing }"
-        :style="state.playing ? { background: mainFill } : undefined"
+        :style="mainStyle"
       >
         {{ mainLine }}
       </p>
-      <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
-      <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
+      <p v-if="mainTrans" class="line-trans" :style="{ color: transColor }">{{ mainTrans }}</p>
+      <p v-if="nextLine" class="line-next" :style="{ color: nextColor }">{{ nextLine }}</p>
       <div class="progress" aria-hidden="true">
-        <div class="progress-fill" :style="{ width: pct + '%' }"></div>
+        <div class="progress-fill" :style="{ width: pct + '%', background: progressFill }"></div>
       </div>
     </div>
 
@@ -262,12 +281,11 @@ onUnmounted(() => {
   filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.18));
   transition: opacity 0.3s ease, filter 0.3s ease;
 }
-/* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次;
-   投影压薄后白色提到 0.94 补偿亮壁纸下的对比度 */
+/* 对照译文:介于大字与预览行之间,不用渐变,不与大字抢主次;
+   颜色经 transColor 内联(主题文字色或自定色派生),投影兜底对比 */
 .line-trans {
   font-size: clamp(25px, 16vh, 38px);
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.94);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
@@ -276,16 +294,15 @@ onUnmounted(() => {
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 .line-main.idle {
-  /* 暂停/未播放:去渐变降白,示意停机 */
+  /* 暂停/未播放:去渐变降亮示意停机;用主题文字色,浅色主题下为墨色 */
   background: none;
-  -webkit-text-fill-color: rgba(255, 255, 255, 0.55);
+  -webkit-text-fill-color: color-mix(in srgb, var(--text) 55%, transparent);
   filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.16));
 }
-/* 下一句:小一号的次级白,预告走向 */
+/* 下一句:小一号的次级色,预告走向;颜色经 nextColor 内联 */
 .line-next {
   font-size: clamp(20px, 12.8vh, 30px);
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.72);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
