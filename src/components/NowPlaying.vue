@@ -17,6 +17,14 @@ import {
 } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
+import { flash } from "../stores/player";
+import { lyricsOn, toggleLyricsWindow } from "../stores/media";
+
+/** 播放页直达开关桌面歌词:与设置页共用同一份状态(media store) */
+async function onToggleLyrics(): Promise<void> {
+  const err = await toggleLyricsWindow();
+  if (err) flash(`歌词小窗切换失败: ${err}`);
+}
 
 const coverUrl = computed(() => {
   // 全屏播放页是大图消费方,优先 512px 档;在线曲目经 coverPathOf 兜底到在线封面缓存
@@ -207,6 +215,14 @@ watch(
           </button>
         </div>
         <div class="zone right">
+          <!-- 桌面歌词直达开关:点亮即悬浮小窗,与设置页同一份状态 -->
+          <button class="t-btn" :class="{ on: lyricsOn }" title="桌面歌词" @click="onToggleLyrics">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <rect x="3" y="4.5" width="18" height="13.5" rx="2.2" />
+              <path d="M7 9.4h10" />
+              <path d="M7 13.2h6.5" />
+            </svg>
+          </button>
           <!-- 音量只保留顶栏一处(与传输控件同属全局),播放页底部不再重复 -->
           <button class="t-btn" :class="{ on: queueOpen }" title="播放队列" @click="queueOpen = !queueOpen">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">

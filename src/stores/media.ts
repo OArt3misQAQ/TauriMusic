@@ -1,4 +1,4 @@
-import { watch } from "vue";
+import { ref, watch } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   player,
@@ -19,6 +19,32 @@ import { api, type LyricLine } from "../api";
  * (进度节流到约 1 次/秒),并把 托盘面板与系统控制中心 的按钮事件接回播放器。
  * 托盘面板是独立 WebView:状态经 media://state 全局广播,按钮经 media://action 回传。
  */
+
+/** 桌面歌词小窗开关(持久化):窗口显示/隐藏由 Rust 命令执行;
+ *  小窗自己的关闭按钮也写同一份 localStorage,storage 事件跨窗口同步回显 */
+export const lyricsOn = ref(localStorage.getItem("tm-lyrics-on") === "1");
+
+/** 切换桌面歌词小窗。先执行命令成功后才提交状态:失败时开关与真实窗口脱节,
+ *  下次启动还会按 localStorage 把小窗拉起来。返回错误文案供调用方提示 */
+export async function toggleLyricsWindow(): Promise<string | null> {
+  const next = !lyricsOn.value;
+  try {
+    await (next ? api.showLyricsWindow() : api.hideLyricsWindow());
+    lyricsOn.value = next;
+    localStorage.setItem("tm-lyrics-on", next ? "1" : "0");
+    return null;
+  } catch (err) {
+    console.error("切换歌词小窗失败", err);
+    return String(err);
+  }
+}
+
+function onLyricsStorage(e: StorageEvent): void {
+  if (e.key === "tm-lyrics-on") lyricsOn.value = e.newValue === "1";
+}
+// 设置页/播放页/小窗自身可能同时开着:开关写的是各自文档的 localStorage,
+// 靠 storage 事件互相同步,否则开着开关的一方与真实窗口状态不一致
+window.addEventListener("storage", onLyricsStorage);
 
 /** 把当前播放状态广播给托盘面板/歌词小窗(以及未来任何需要它的窗口) */
 function broadcast(): void {
@@ -189,5 +215,6 @@ if (import.meta.hot) {
     unlisteners = [];
     for (const stop of stopWatches) stop();
     stopWatches = [];
+    window.removeEventListener("storage", onLyricsStorage);
   });
 }
