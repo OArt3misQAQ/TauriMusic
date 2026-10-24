@@ -2,7 +2,7 @@ import { reactive } from "vue";
 
 export interface CtxItem {
   label: string;
-  icon?: "play" | "album" | "artist" | "export" | "delete" | "playlist" | "edit";
+  icon?: "play" | "album" | "artist" | "export" | "delete" | "playlist" | "edit" | "save";
   danger?: boolean;
   action: () => void;
 }

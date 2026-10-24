@@ -349,11 +349,17 @@ export const api = {
     invoke<string | null>("online_cover", { source, id, coverUrl }),
 };
 
+/** 在线曲目在播放队列里的完整 id(来源前缀 + 平台 id):
+ *  「正在播放」高亮比对等场景复用,避免各处重复拼前缀 */
+export function onlineTrackId(t: OnlineTrack): string {
+  return `${ONLINE_PREFIXES[t.source]}${t.id}`;
+}
+
 /** 在线搜索结果 → 播放队列 Track:id 加来源前缀与本地路径 hash 空间隔离,
  *  path 留空——播放 src 走在线直链,歌词/封面等本地探测对它一律静默落空 */
 export function onlineToTrack(t: OnlineTrack): Track {
   return {
-    id: `${ONLINE_PREFIXES[t.source]}${t.id}`,
+    id: onlineTrackId(t),
     title: t.name,
     artist: t.artist,
     album: t.album || "在线音乐",

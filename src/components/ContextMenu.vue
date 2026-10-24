@@ -59,6 +59,10 @@ const style = computed(() => ({ left: `${ctx.x}px`, top: `${ctx.y}px` }));
             <circle cx="18.5" cy="15.5" r="2.2" />
             <path d="M20.7 15.5V9l-3.4.9" />
           </svg>
+          <svg v-else-if="item.icon === 'save'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 4.6v9.2m0 0 3.4-3.4M12 13.8l-3.4-3.4" />
+            <path d="M5.4 18.4h13.2" />
+          </svg>
           <svg v-else-if="item.icon === 'edit'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14.5 5.5l4 4L8 20H4v-4z" />
             <path d="m12.5 7.5 4 4" />
