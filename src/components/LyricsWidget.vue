@@ -84,7 +84,9 @@ const pct = computed(() =>
 const winH = ref(window.innerHeight);
 const fontSize = computed(() => {
   const rows = 1 + (mainTrans.value ? 0.554 : 0) + (nextLine.value ? 0.426 : 0);
-  const FIXED_OVERHEAD = 38;
+  // 固定开销(像素):padding 22 + 行间 gap 8 + 进度线 4.5 + 余量——控制胶囊
+  // 已绝对定位悬浮,不占布局,不计入
+  const FIXED_OVERHEAD = 44;
   const fs = (Math.max(winH.value, 100) - FIXED_OVERHEAD) / (rows * 1.22);
   return Math.max(16, Math.min(72, fs));
 });
@@ -112,7 +114,7 @@ const mainStyle = computed(() => {
     // (内联优先级又压过类里的裁切声明),clip 一旦失效文字填充透明、
     // 渐变铺满整框——「一播放歌词就消失」的根因。裁切一并内联钉死
     backgroundImage: c
-      ? `linear-gradient(100deg, color-mix(in srgb, ${c} 25%, #fff) 10%, ${c} 90%)`
+      ? `linear-gradient(100deg, color-mix(in srgb, ${c} 38%, #fff) 8%, ${c} 92%)`
       : `linear-gradient(100deg, var(--text) 22%, color-mix(in srgb, var(--accent) 42%, var(--text)) 58%, color-mix(in srgb, var(--accent) 82%, var(--text)) 130%)`,
     WebkitBackgroundClip: "text",
     backgroundClip: "text",
@@ -120,11 +122,11 @@ const mainStyle = computed(() => {
 });
 const transColor = computed(() => {
   const c = customColor.value;
-  return c ? `color-mix(in srgb, ${c} 78%, #fff)` : `color-mix(in srgb, var(--text) 90%, transparent)`;
+  return c ? `color-mix(in srgb, ${c} 86%, #fff)` : `color-mix(in srgb, var(--text) 90%, transparent)`;
 });
 const nextColor = computed(() => {
   const c = customColor.value;
-  return c ? `color-mix(in srgb, ${c} 52%, #fff)` : `color-mix(in srgb, var(--text) 66%, transparent)`;
+  return c ? `color-mix(in srgb, ${c} 62%, #fff)` : `color-mix(in srgb, var(--text) 66%, transparent)`;
 });
 const progressFill = computed(() => {
   const c = customColor.value;
@@ -286,6 +288,7 @@ onUnmounted(() => {
    drop-shadow 叠层会互相再投影、浓度翻倍,大半径暗影本身就是一团
    「模糊背景」(用户反馈),这里只留最低限度给亮壁纸兜底,无可见暗晕 */
 .lyr-root {
+  position: relative; /* 操控胶囊的绝对定位锚点 */
   height: 100%;
   box-sizing: border-box;
   display: flex;
@@ -309,6 +312,9 @@ onUnmounted(() => {
    行多字小、行少字大,任何窗高都完整可见,不再被 overflow:hidden 切行。
    填充透明化后 text-shadow 会透进字形,可读性用单层柔影兜底 */
 .line-main {
+  /* fit-content:渐变必须贴合文字宽度而非元素框——全宽元素上短句只路过
+     渐变中段(大量混白),选红只见粉(用户反馈「这是啥颜色」) */
+  width: fit-content;
   font-size: var(--fs);
   font-weight: 800;
   line-height: 1.22;
@@ -371,10 +377,13 @@ onUnmounted(() => {
   transition: width 0.25s linear;
 }
 
-/* ===== 控制胶囊:默认隐身,悬停窗口时从下方 6px 浮现 ===== */
+/* ===== 控制胶囊:绝对定位悬浮于底缘,不占布局空间——
+   占流式布局会把字号预算吃掉 52px,歌词被挤出窗(「操控栏不全」的根因)。
+   默认隐身且不接指针(hidden 不挡拖拽),悬停窗口才浮现可点 ===== */
 .lyr-ctl {
-  flex: none;
-  margin: 0 auto;
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -388,12 +397,14 @@ onUnmounted(() => {
     inset 0 1px 0 color-mix(in srgb, var(--text) 10%, transparent),
     0 8px 28px rgba(0, 0, 0, 0.4);
   opacity: 0;
-  transform: translateY(6px);
+  pointer-events: none;
+  transform: translate(-50%, 6px);
   transition: opacity 0.28s var(--ease-out-soft), transform 0.28s var(--ease-out-soft);
 }
 .lyr-root:hover .lyr-ctl {
   opacity: 1;
-  transform: translateY(0);
+  pointer-events: auto;
+  transform: translate(-50%, 0);
 }
 /* 当前歌曲名:胶囊行首,超长省略 */
 .song {
