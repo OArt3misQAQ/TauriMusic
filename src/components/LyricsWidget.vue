@@ -77,19 +77,16 @@ const pct = computed(() =>
   state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
 );
 
-/* 字号自适应:按当前可见行数(大字/译文/下一句)把窗口高度摊给各行,
-   行多则字小、行少则字大——固定按 vh 放大时四行内容需求约 260px,
-   默认 190px 窗高会把上下行齐齐切掉(overflow:hidden 不救人)。
-   大字为基准 1,译文 0.52、下一句 0.4(近似旧版视觉比例),进度线与
-   行间距按固定开销折进系数;resize 时重算 */
+/* 字号自适应:窗口高度摊给可见行(大字/译文/下一句)。
+   固定开销(padding 22 + 行距 8 + 进度线 4.5 + 余量)是**像素**不是行数,
+   按行数折算会在小窗时把字算大(总高超窗 → 上下切行);
+   译文/下一句的系数 = 字号比(0.52/0.4) × 行高比(1.3/1.22) */
 const winH = ref(window.innerHeight);
 const fontSize = computed(() => {
-  // 系数已含行高差异:译文 0.52 字号 × 1.3/1.22 行高比 ≈ 0.55,下一句 0.4 × 比 ≈ 0.43
-  const rows = 1 + (mainTrans.value ? 0.55 : 0) + (nextLine.value ? 0.43 : 0);
-  // 上下 padding(22px)+行间距+进度线:固定开销折算成 0.6 行大字的竖向空间
-  const overhead = 0.6;
-  const usable = Math.max(winH.value - 24, 60);
-  return Math.max(18, Math.min(64, usable / (rows + overhead)));
+  const rows = 1 + (mainTrans.value ? 0.554 : 0) + (nextLine.value ? 0.426 : 0);
+  const FIXED_OVERHEAD = 38;
+  const fs = (Math.max(winH.value, 100) - FIXED_OVERHEAD) / (rows * 1.22);
+  return Math.max(16, Math.min(72, fs));
 });
 function onResize(): void {
   winH.value = window.innerHeight;
@@ -145,12 +142,15 @@ const LYRIC_TIER_H = { s: 140, m: 190, l: 250 } as const;
 async function applyScale(): Promise<void> {
   const saved = localStorage.getItem("tm-lyrics-scale") ?? "m";
   const h = (LYRIC_TIER_H as Record<string, number>)[saved] ?? LYRIC_TIER_H.m;
+  // 先钉字号基准再改窗:隐藏窗口的 setSize 不派发 resize 事件,
+  // 不主动同步 winH 的话字号仍按旧窗高计算,新窗里直接溢出切行
+  winH.value = h;
   try {
     const sf = await win.scaleFactor();
     const cur = await win.innerSize(); // 物理像素,换算回逻辑宽度保持不动
     await win.setSize(new LogicalSize(cur.width / sf, h));
   } catch {
-    /* 尺寸调整失败不致命:字号自适应仍按现窗高工作 */
+    /* 尺寸调整失败不致命:字号自适应仍按钉住的窗高工作 */
   }
 }
 
