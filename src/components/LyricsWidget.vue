@@ -84,9 +84,10 @@ const pct = computed(() =>
    行间距按固定开销折进系数;resize 时重算 */
 const winH = ref(window.innerHeight);
 const fontSize = computed(() => {
-  const rows = 1 + (mainTrans.value ? 0.52 : 0) + (nextLine.value ? 0.4 : 0);
-  // 上下 padding(22px)+行间距+进度线:固定开销折算成 0.55 行大字的竖向空间
-  const overhead = 0.55;
+  // 系数已含行高差异:译文 0.52 字号 × 1.3/1.22 行高比 ≈ 0.55,下一句 0.4 × 比 ≈ 0.43
+  const rows = 1 + (mainTrans.value ? 0.55 : 0) + (nextLine.value ? 0.43 : 0);
+  // 上下 padding(22px)+行间距+进度线:固定开销折算成 0.6 行大字的竖向空间
+  const overhead = 0.6;
   const usable = Math.max(winH.value - 24, 60);
   return Math.max(18, Math.min(64, usable / (rows + overhead)));
 });
@@ -110,9 +111,14 @@ const mainStyle = computed(() => {
     return c ? { WebkitTextFillColor: `color-mix(in srgb, ${c} 42%, #9a9a9a)` } : {};
   }
   return {
-    background: c
+    // 必须用 backgroundImage 而非 background 简写:简写会重置 background-clip
+    // (内联优先级又压过类里的裁切声明),clip 一旦失效文字填充透明、
+    // 渐变铺满整框——「一播放歌词就消失」的根因。裁切一并内联钉死
+    backgroundImage: c
       ? `linear-gradient(100deg, color-mix(in srgb, ${c} 25%, #fff) 10%, ${c} 90%)`
       : `linear-gradient(100deg, var(--text) 22%, color-mix(in srgb, var(--accent) 42%, var(--text)) 58%, color-mix(in srgb, var(--accent) 82%, var(--text)) 130%)`,
+    WebkitBackgroundClip: "text",
+    backgroundClip: "text",
   };
 });
 const transColor = computed(() => {
