@@ -5,9 +5,10 @@ import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 
 /** 桌面歌词小窗(独立 WebView 窗口,常驻后台):
  *  状态/歌词由主窗口经 media://state、media://lyrics 广播,操作经 media://action 回传;
- *  透明度与位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置页)。
- *  设计语言:「沉浸文字」——窗口全透明,歌词大字直接浮在桌面上,
- *  可读性靠多层投影而非底板;控制条是悬停才浮现的烟熏玻璃胶囊 */
+ *  字号与位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置页)。
+ *  设计语言:「沉浸文字」——窗口全透明,歌词大字直接浮在桌面上,不设底板:
+ *  任何形式的背景板在深色壁纸上都会糊成一整块死黑(旧版教训),
+ *  可读性完全交给多层投影;控制条是悬停才浮现的烟熏玻璃胶囊 */
 
 interface WidgetState {
   title: string;
@@ -92,18 +93,8 @@ function onVolCommit(e: Event): void {
   void emit("media://action", `volume:${v}`);
 }
 
-/* 面板浓淡 → 背景不透明度:0.05~0.9,只作用于贴文字的背景板,
-   文字恒定全亮(用户反馈:调的是透明度不是文字亮度) */
-const plateAlpha = ref(clampPlate(Number(localStorage.getItem("tm-lyrics-opacity") ?? "0.55")));
-function clampPlate(v: number): number {
-  return Number.isFinite(v) ? Math.min(0.9, Math.max(0.05, v)) : 0.55;
-}
-function onOpacity(e: Event): void {
-  plateAlpha.value = clampPlate(Number((e.target as HTMLInputElement).value));
-}
-function onOpacityCommit(): void {
-  localStorage.setItem("tm-lyrics-opacity", String(plateAlpha.value));
-}
+/* 旧版「烟熏底板浓度」键:底板已移除,启动即清掉残留,防设置页/调试困惑 */
+localStorage.removeItem("tm-lyrics-opacity");
 
 /* 歌词大小:0.6~1.6 缩放,作用于主/副行字号 */
 const fsize = ref(clampSize(Number(localStorage.getItem("tm-lyrics-size") ?? "1")));
@@ -172,20 +163,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,背景板贴文字、透明度可调 -->
+  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
   <div
     class="lyr-root"
     data-tauri-drag-region="deep"
-    :style="{ '--fs': fsize, '--pa': plateAlpha }"
+    :style="{ '--fs': fsize }"
   >
-    <div class="lyr-plate" data-tauri-drag-region="deep">
-      <div class="lyr-lines" data-tauri-drag-region="deep">
-        <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
-        <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
-        <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
-        <div class="progress" aria-hidden="true">
-          <div class="progress-fill" :style="{ width: pct + '%' }"></div>
-        </div>
+    <div class="lyr-lines" data-tauri-drag-region="deep">
+      <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
+      <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
+      <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
+      <div class="progress" aria-hidden="true">
+        <div class="progress-fill" :style="{ width: pct + '%' }"></div>
       </div>
     </div>
 
@@ -264,25 +253,6 @@ onUnmounted(() => {
 
       <span class="gap"></span>
 
-      <svg class="cico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-        <rect x="4" y="4" width="12" height="12" rx="2" />
-        <rect x="9" y="9" width="11" height="11" rx="2" />
-      </svg>
-      <input
-        class="mini-slider"
-        type="range"
-        min="0.05"
-        max="0.9"
-        step="0.05"
-        :value="plateAlpha"
-        :style="{ '--fill': ((plateAlpha - 0.05) / 0.85) * 100 + '%' }"
-        title="背景不透明度"
-        @input="onOpacity"
-        @change="onOpacityCommit"
-      />
-
-      <span class="gap"></span>
-
       <button class="cbtn" title="关闭小窗(可在设置里重新开启)" @click="closeWidget">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
           <path d="M6 6l12 12M18 6L6 18" />
@@ -293,9 +263,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 沉浸文字模式:窗口全透明(配置 transparent);
-   背景板贴文字(不铺满窗口),不透明度由滑杆调节;文字恒定全亮,
-   可读性由文字的多层投影 + 背景板共同承担,控制胶囊悬停才浮现 */
+/* 沉浸文字模式:窗口全透明(配置 transparent),无任何底板——
+   背景板在深色壁纸上必然糊成死黑(旧版教训),可读性由投影承担:
+   实色字用 text-shadow(首层近距深影近似描边,后两层环境影),
+   渐变镂空字(当前句)用 drop-shadow 滤镜(text-shadow 会透进字形) */
 .lyr-root {
   height: 100%;
   box-sizing: border-box;
@@ -305,19 +276,6 @@ onUnmounted(() => {
   gap: 8px;
   padding: 10px 22px 12px;
   user-select: none;
-}
-
-/* 背景板:贴歌词内容,烟熏深色,不透明度滑杆(0.05~0.9)直接映射板体透明度 */
-.lyr-plate {
-  padding: 14px 26px 12px;
-  border-radius: 18px;
-  background: linear-gradient(
-    180deg,
-    rgba(22, 23, 27, calc(var(--pa) * 0.96)),
-    rgba(9, 10, 12, var(--pa))
-  );
-  border: 1px solid rgba(255, 255, 255, calc(var(--pa) * 0.16));
-  box-shadow: 0 12px 38px rgba(0, 0, 0, calc(var(--pa) * 0.55));
 }
 
 /* ===== 歌词区 ===== */
@@ -330,7 +288,8 @@ onUnmounted(() => {
   overflow: hidden;
 }
 /* 当前句:大字重 + 品牌色渐变填充,字号随 --fs 缩放。
-   填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜(双层,柔而不晕) */
+   填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜:
+   近距深影压住字形边缘,中距与远距环境影把字从亮壁纸上托出来 */
 .line-main {
   font-size: calc(clamp(22px, 16vh, 38px) * var(--fs, 1));
   font-weight: 800;
@@ -344,42 +303,45 @@ onUnmounted(() => {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85)) drop-shadow(0 4px 18px rgba(0, 0, 0, 0.45));
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.95))
+    drop-shadow(0 4px 12px rgba(0, 0, 0, 0.6)) drop-shadow(0 12px 32px rgba(0, 0, 0, 0.4));
   transition: opacity 0.3s ease, filter 0.3s ease;
 }
 /* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次 */
 .line-trans {
   font-size: calc(clamp(16px, 10vh, 24px) * var(--fs, 1));
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(255, 255, 255, 0.9);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   text-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.82),
-    0 3px 14px rgba(0, 0, 0, 0.42);
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 8px rgba(0, 0, 0, 0.5),
+    0 4px 18px rgba(0, 0, 0, 0.45);
 }
 .line-main.idle {
   /* 暂停/未播放:去渐变降白,示意停机 */
   background: none;
   -webkit-text-fill-color: rgba(255, 255, 255, 0.55);
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9)) drop-shadow(0 4px 14px rgba(0, 0, 0, 0.4));
 }
 /* 下一句:小一号的次级白,预告走向 */
 .line-next {
   font-size: calc(clamp(13px, 8vh, 19px) * var(--fs, 1));
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(255, 255, 255, 0.66);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   text-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.8),
-    0 2px 10px rgba(0, 0, 0, 0.4);
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 8px rgba(0, 0, 0, 0.5),
+    0 3px 14px rgba(0, 0, 0, 0.42);
 }
 
 /* 细进度线:贴在文字块下的 2.5px 圆角线,随播放推进 */
