@@ -5,7 +5,7 @@ import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 
 /** 桌面歌词小窗(独立 WebView 窗口,常驻后台):
  *  状态/歌词由主窗口经 media://state、media://lyrics 广播,操作经 media://action 回传;
- *  字号与位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置页)。
+ *  位置持久化在 localStorage(同源三窗口共享,storage 事件自动同步设置页)。
  *  设计语言:「沉浸文字」——窗口全透明,歌词大字直接浮在桌面上,不设底板:
  *  任何形式的背景板在深色壁纸上都会糊成一整块死黑(旧版教训),
  *  可读性完全交给多层投影;控制条是悬停才浮现的烟熏玻璃胶囊 */
@@ -77,36 +77,10 @@ const pct = computed(() =>
   state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
 );
 
-/* 音量:拖动中本地预览,经 volume:<0~1> 动作回传主窗口实时生效 */
-const volDragging = ref(false);
-const volLocal = ref(1);
-const volShow = computed(() => (volDragging.value ? volLocal.value : state.value.volume));
-function onVolInput(e: Event): void {
-  const v = Number((e.target as HTMLInputElement).value);
-  volDragging.value = true;
-  volLocal.value = v;
-  void emit("media://action", `volume:${v}`);
-}
-function onVolCommit(e: Event): void {
-  const v = Number((e.target as HTMLInputElement).value);
-  volDragging.value = false;
-  void emit("media://action", `volume:${v}`);
-}
-
-/* 旧版「烟熏底板浓度」键:底板已移除,启动即清掉残留,防设置页/调试困惑 */
+/* 旧版残留偏好键(底板浓度/字号档):对应控件已移除,启动即清掉,
+   防设置页/调试困惑 */
 localStorage.removeItem("tm-lyrics-opacity");
-
-/* 歌词大小:0.6~1.6 缩放,作用于主/副行字号 */
-const fsize = ref(clampSize(Number(localStorage.getItem("tm-lyrics-size") ?? "1")));
-function clampSize(v: number): number {
-  return Number.isFinite(v) ? Math.min(1.6, Math.max(0.6, v)) : 1;
-}
-function onSize(e: Event): void {
-  fsize.value = clampSize(Number((e.target as HTMLInputElement).value));
-}
-function onSizeCommit(): void {
-  localStorage.setItem("tm-lyrics-size", String(fsize.value));
-}
+localStorage.removeItem("tm-lyrics-size");
 
 function act(a: string): void {
   void emit("media://action", a);
@@ -163,12 +137,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 整窗可拖(deep 规则下按钮/滑杆自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
-  <div
-    class="lyr-root"
-    data-tauri-drag-region="deep"
-    :style="{ '--fs': fsize }"
-  >
+  <!-- 整窗可拖(deep 规则下按钮自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
+  <div class="lyr-root" data-tauri-drag-region="deep">
     <div class="lyr-lines" data-tauri-drag-region="deep">
       <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
       <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
@@ -178,7 +148,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 控制胶囊:悬停浮现,烟熏玻璃与托盘卡同语言;行首显示当前歌曲 -->
+    <!-- 控制胶囊:悬停浮现,只留传输与关闭——音量跟随主窗口,字号固定最大档 -->
     <div class="lyr-ctl">
       <span class="song" :title="state.title">{{ state.title || "未在播放" }}</span>
       <span class="vline"></span>
@@ -207,49 +177,6 @@ onUnmounted(() => {
           <path d="M4 6.4v11.2L11.8 12z" />
         </svg>
       </button>
-
-      <span class="gap"></span>
-
-      <svg class="cico" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M11.2 4.8 6.8 8.3H4v7.4h2.8l4.4 3.5z" />
-        <path
-          d="M14.5 9.3a3.9 3.9 0 0 1 0 5.4M17 7a7.2 7.2 0 0 1 0 10"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.7"
-          stroke-linecap="round"
-        />
-      </svg>
-      <input
-        class="mini-slider"
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        :value="volShow"
-        :style="{ '--fill': volShow * 100 + '%' }"
-        title="音量"
-        @input="onVolInput"
-        @change="onVolCommit"
-      />
-
-      <span class="gap"></span>
-
-      <svg class="cico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-        <path d="M4 7h16M6 12h13M8 17h10" />
-      </svg>
-      <input
-        class="mini-slider"
-        type="range"
-        min="0.6"
-        max="1.6"
-        step="0.05"
-        :value="fsize"
-        :style="{ '--fill': ((fsize - 0.6) / 1.0) * 100 + '%' }"
-        title="歌词大小"
-        @input="onSize"
-        @change="onSizeCommit"
-      />
 
       <span class="gap"></span>
 
@@ -287,11 +214,11 @@ onUnmounted(() => {
   gap: 4px;
   overflow: hidden;
 }
-/* 当前句:大字重 + 品牌色渐变填充,字号随 --fs 缩放。
+/* 当前句:大字重 + 品牌色渐变填充,字号固定在原滑杆上限档。
    填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜:
    近距深影压住字形边缘,中距与远距环境影把字从亮壁纸上托出来 */
 .line-main {
-  font-size: calc(clamp(22px, 16vh, 38px) * var(--fs, 1));
+  font-size: clamp(34px, 25.6vh, 61px);
   font-weight: 800;
   line-height: 1.22;
   text-align: center;
@@ -309,7 +236,7 @@ onUnmounted(() => {
 /* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次;
    投影压薄后白色提到 0.94 补偿亮壁纸下的对比度 */
 .line-trans {
-  font-size: calc(clamp(16px, 10vh, 24px) * var(--fs, 1));
+  font-size: clamp(25px, 16vh, 38px);
   font-weight: 650;
   color: rgba(255, 255, 255, 0.94);
   text-align: center;
@@ -327,7 +254,7 @@ onUnmounted(() => {
 }
 /* 下一句:小一号的次级白,预告走向 */
 .line-next {
-  font-size: calc(clamp(13px, 8vh, 19px) * var(--fs, 1));
+  font-size: clamp(20px, 12.8vh, 30px);
   font-weight: 650;
   color: rgba(255, 255, 255, 0.72);
   text-align: center;
@@ -432,33 +359,5 @@ onUnmounted(() => {
 .cbtn.play:hover {
   background: var(--accent-hover);
   transform: scale(1.06);
-}
-.cico {
-  width: 15px;
-  height: 15px;
-  flex: none;
-  color: rgba(255, 255, 255, 0.55);
-}
-.mini-slider {
-  width: 84px;
-  height: 3px;
-  border-radius: 999px;
-  background: linear-gradient(
-    to right,
-    #fff var(--fill, 0%),
-    rgba(255, 255, 255, 0.22) var(--fill, 0%)
-  );
-}
-.mini-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 6px rgba(0, 0, 0, 0.4);
-}
-.mini-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
 }
 </style>

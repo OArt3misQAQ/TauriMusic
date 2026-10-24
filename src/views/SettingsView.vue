@@ -180,7 +180,7 @@ async function clearStatsConfirmed(): Promise<void> {
             </div>
           </div>
           <button class="opt" @click="toggleLyrics">
-            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,逐行滚动 + 播放/切歌/音量控制,字号可调,关闭主窗口仍在</small></span>
+            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,逐行滚动 + 播放/切歌控制,关闭主窗口仍在</small></span>
             <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
           </button>
         </div>
