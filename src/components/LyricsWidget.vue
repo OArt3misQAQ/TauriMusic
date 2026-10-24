@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize, PhysicalPosition } from "@tauri-apps/api/window";
 
 /** 桌面歌词小窗(独立 WebView 窗口,常驻后台):
  *  状态/歌词由主窗口经 media://state、media://lyrics 广播,操作经 media://action 回传;
@@ -135,6 +135,23 @@ const progressFill = computed(() => {
 });
 function onColorStorage(e: StorageEvent): void {
   if (e.key === "tm-lyrics-color") applyColorFromStorage();
+  if (e.key === "tm-lyrics-scale") void applyScale();
+}
+
+/* 歌词大小档位(设置页三档):字号按窗口高度自适应,放大字必然重新溢出,
+   所以档位实际调整的是小窗高度——字随窗高自动变大,「永不溢出」恒成立。
+   宽度与左上角位置保持不动,设置页改动经 storage 事件实时生效 */
+const LYRIC_TIER_H = { s: 140, m: 190, l: 250 } as const;
+async function applyScale(): Promise<void> {
+  const saved = localStorage.getItem("tm-lyrics-scale") ?? "m";
+  const h = (LYRIC_TIER_H as Record<string, number>)[saved] ?? LYRIC_TIER_H.m;
+  try {
+    const sf = await win.scaleFactor();
+    const cur = await win.innerSize(); // 物理像素,换算回逻辑宽度保持不动
+    await win.setSize(new LogicalSize(cur.width / sf, h));
+  } catch {
+    /* 尺寸调整失败不致命:字号自适应仍按现窗高工作 */
+  }
 }
 
 /* 旧版残留偏好键(底板浓度/字号档):对应控件已移除,启动即清掉,
@@ -177,6 +194,7 @@ onMounted(async () => {
   );
   void emit("media://state-request");
   applyColorFromStorage();
+  void applyScale();
   window.addEventListener("keydown", onKey);
   window.addEventListener("storage", onColorStorage);
   window.addEventListener("resize", onResize);

@@ -30,6 +30,20 @@ function resetLyricsColor(): void {
   localStorage.removeItem("tm-lyrics-color");
 }
 
+/** 歌词大小档位:写 localStorage 即经 storage 事件同步小窗(小窗改高度,字随窗高自适应) */
+const lyricSizeOptions = [
+  { value: "s", label: "小" },
+  { value: "m", label: "中" },
+  { value: "l", label: "大" },
+] as const;
+const lyricSize = ref(["s", "m", "l"].includes(localStorage.getItem("tm-lyrics-scale") ?? "")
+  ? (localStorage.getItem("tm-lyrics-scale") as "s" | "m" | "l")
+  : "m");
+function setLyricSize(v: "s" | "m" | "l"): void {
+  lyricSize.value = v;
+  localStorage.setItem("tm-lyrics-scale", v);
+}
+
 const themeOptions = [
   { value: "system", label: "跟随系统" },
   { value: "light", label: "浅色" },
@@ -205,6 +219,19 @@ async function clearStatsConfirmed(): Promise<void> {
                 </svg>
               </button>
             </span>
+          </div>
+          <div class="opt static">
+            <span class="label">歌词大小<small class="sub">调整桌面歌词小窗高度,字号随之自适应</small></span>
+            <div class="seg">
+              <button
+                v-for="t in lyricSizeOptions"
+                :key="t.value"
+                :class="{ on: lyricSize === t.value }"
+                @click="setLyricSize(t.value)"
+              >
+                {{ t.label }}
+              </button>
+            </div>
           </div>
         </div>
       </section>
