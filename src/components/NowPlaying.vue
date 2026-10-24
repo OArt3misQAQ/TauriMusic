@@ -145,13 +145,23 @@ watch(
 </script>
 
 <template>
-  <!-- queue-open:队列抽屉打开时,右上角收起箭头让位到抽屉左侧 -->
+  <!-- queue-open:队列抽屉打开时,右上角动作列整体让位到抽屉左侧 -->
   <div class="np" :class="{ 'queue-open': queueOpen }" :style="bgStyle">
-    <button class="close" title="关闭" @click="close">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m6 9.2 6 6 6-6" />
-      </svg>
-    </button>
+    <!-- 右上角独立动作区:桌面歌词开关与收起,不与底部传输控件混排 -->
+    <div class="corner">
+      <button class="t-btn corner-btn" :class="{ on: lyricsOn }" title="桌面歌词" @click="onToggleLyrics">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <rect x="3" y="4.5" width="18" height="13.5" rx="2.2" />
+          <path d="M7 9.4h10" />
+          <path d="M7 13.2h6.5" />
+        </svg>
+      </button>
+      <button class="close" title="关闭" @click="close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9.2 6 6 6-6" />
+        </svg>
+      </button>
+    </div>
 
     <div class="stage">
       <div class="art">
@@ -215,14 +225,6 @@ watch(
           </button>
         </div>
         <div class="zone right">
-          <!-- 桌面歌词直达开关:点亮即悬浮小窗,与设置页同一份状态 -->
-          <button class="t-btn" :class="{ on: lyricsOn }" title="桌面歌词" @click="onToggleLyrics">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <rect x="3" y="4.5" width="18" height="13.5" rx="2.2" />
-              <path d="M7 9.4h10" />
-              <path d="M7 13.2h6.5" />
-            </svg>
-          </button>
           <!-- 音量只保留顶栏一处(与传输控件同属全局),播放页底部不再重复 -->
           <button class="t-btn" :class="{ on: queueOpen }" title="播放队列" @click="queueOpen = !queueOpen">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
@@ -336,11 +338,30 @@ watch(
   transform: scale(1.1);
 }
 
-.close {
+/* 右上角独立动作列:桌面歌词开关叠在收起箭头上方,整列绝对定位,
+   不参与底部三区控制行的布局——开关归开关,传输归传输 */
+.corner {
   position: absolute;
   top: 60px;
   right: 18px;
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.np.queue-open .corner {
+  right: calc(min(320px, 46%) + 18px);
+}
+.corner-btn {
+  width: 34px;
+  height: 34px;
+}
+.corner-btn svg {
+  width: 17px;
+  height: 17px;
+}
+.close {
   width: 34px;
   height: 34px;
   border-radius: 50%;
@@ -356,9 +377,6 @@ watch(
     transform 0.35s var(--ease-spring);
 }
 /* 队列抽屉打开:收起箭头平滑让位到抽屉左侧(宽度与抽屉一致) */
-.np.queue-open .close {
-  right: calc(min(320px, 46%) + 18px);
-}
 .close:hover {
   background: var(--np-close-hover);
 }
