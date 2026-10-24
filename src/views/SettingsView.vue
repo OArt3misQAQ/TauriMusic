@@ -17,6 +17,19 @@ async function toggleLyrics(): Promise<void> {
   if (err) flashStatus(`歌词小窗切换失败: ${err}`);
 }
 
+/** 桌面歌词自定色:空 = 跟随皮肤(渐变暖端取品牌 accent)。
+ *  写入 localStorage 即经 storage 事件同步到歌词小窗,实时生效 */
+const lyricsColor = ref(localStorage.getItem("tm-lyrics-color") ?? "");
+function onLyricsColor(e: Event): void {
+  const v = (e.target as HTMLInputElement).value;
+  lyricsColor.value = v;
+  localStorage.setItem("tm-lyrics-color", v);
+}
+function resetLyricsColor(): void {
+  lyricsColor.value = "";
+  localStorage.removeItem("tm-lyrics-color");
+}
+
 const themeOptions = [
   { value: "system", label: "跟随系统" },
   { value: "light", label: "浅色" },
@@ -179,10 +192,20 @@ async function clearStatsConfirmed(): Promise<void> {
               </button>
             </div>
           </div>
-          <button class="opt" @click="toggleLyrics">
-            <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,逐行滚动 + 播放/切歌控制,关闭主窗口仍在</small></span>
-            <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
-          </button>
+          <div class="opt">
+            <button class="lyr-toggle" @click="toggleLyrics">
+              <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,颜色可在右侧调配,关闭主窗口仍在</small></span>
+              <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
+            </button>
+            <span class="lyr-color" title="歌词颜色">
+              <input type="color" :value="lyricsColor || '#f0a08e'" @input="onLyricsColor" />
+              <button v-if="lyricsColor" class="lyr-color-reset" title="恢复跟随皮肤" @click="resetLyricsColor">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </span>
+          </div>
         </div>
       </section>
 
@@ -337,6 +360,61 @@ button.opt:hover {
 .opt.col-wrap {
   flex-wrap: wrap;
   row-gap: 8px;
+}
+/* 桌面歌词行:开关钮 + 取色器并排。行本体是 div,悬停反馈由内层开关钮承担 */
+.lyr-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 8px;
+  transition: background 0.18s var(--ease-out-soft);
+}
+.lyr-toggle:hover {
+  background: var(--hover);
+}
+.lyr-color {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.lyr-color input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+.lyr-color input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.lyr-color input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+.lyr-color-reset {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}
+.lyr-color-reset:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.lyr-color-reset svg {
+  width: 11px;
+  height: 11px;
 }
 .label {
   flex: 1;

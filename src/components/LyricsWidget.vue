@@ -77,6 +77,24 @@ const pct = computed(() =>
   state.value.duration > 0 ? (state.value.position / state.value.duration) * 100 : 0,
 );
 
+/* 歌词颜色:默认跟随皮肤(暖端取品牌 accent 令牌),用户在设置页调配后
+   覆盖暖端。storage 事件实时跟随设置页改动(跨窗口同源共享) */
+const customColor = ref("");
+function applyColorFromStorage(): void {
+  const v = localStorage.getItem("tm-lyrics-color") ?? "";
+  customColor.value = /^#[0-9a-fA-F]{6}$/.test(v) ? v : "";
+}
+const mainFill = computed(() => {
+  const c = customColor.value;
+  const warm = c
+    ? `color-mix(in srgb, ${c} 45%, #fff) 58%, ${c} 130%`
+    : `color-mix(in srgb, var(--accent) 42%, #fff) 58%, color-mix(in srgb, var(--accent) 82%, #fff) 130%`;
+  return `linear-gradient(100deg, #ffffff 34%, ${warm})`;
+});
+function onColorStorage(e: StorageEvent): void {
+  if (e.key === "tm-lyrics-color") applyColorFromStorage();
+}
+
 /* 旧版残留偏好键(底板浓度/字号档):对应控件已移除,启动即清掉,
    防设置页/调试困惑 */
 localStorage.removeItem("tm-lyrics-opacity");
@@ -116,7 +134,9 @@ onMounted(async () => {
     await win.onMoved((e) => onMovedSave(e.payload.x, e.payload.y)),
   );
   void emit("media://state-request");
+  applyColorFromStorage();
   window.addEventListener("keydown", onKey);
+  window.addEventListener("storage", onColorStorage);
   // 恢复上次位置(物理像素,多显示器换算交给系统)
   try {
     const saved = localStorage.getItem("tm-lyrics-pos");
@@ -133,6 +153,7 @@ onUnmounted(() => {
   cleanups = [];
   window.clearTimeout(moveTimer);
   window.removeEventListener("keydown", onKey);
+  window.removeEventListener("storage", onColorStorage);
 });
 </script>
 
@@ -140,7 +161,15 @@ onUnmounted(() => {
   <!-- 整窗可拖(deep 规则下按钮自动豁免);窗口全透明,歌词无底板直接浮于桌面 -->
   <div class="lyr-root" data-tauri-drag-region="deep">
     <div class="lyr-lines" data-tauri-drag-region="deep">
-      <p class="line-main" :class="{ idle: !state.playing }">{{ mainLine }}</p>
+      <!-- 渐变底色由 mainFill 提供(皮肤令牌或用户自定色);闲置态不绑内联,
+           让 .idle 的去渐变降白生效 -->
+      <p
+        class="line-main"
+        :class="{ idle: !state.playing }"
+        :style="state.playing ? { background: mainFill } : undefined"
+      >
+        {{ mainLine }}
+      </p>
       <p v-if="mainTrans" class="line-trans">{{ mainTrans }}</p>
       <p v-if="nextLine" class="line-next">{{ nextLine }}</p>
       <div class="progress" aria-hidden="true">
@@ -215,8 +244,9 @@ onUnmounted(() => {
   overflow: hidden;
 }
 /* 当前句:大字重 + 品牌色渐变填充,字号固定在原滑杆上限档。
-   填充透明化后 text-shadow 会透进字形,可读性改用 drop-shadow 滤镜:
-   近距深影压住字形边缘,中距与远距环境影把字从亮壁纸上托出来 */
+   渐变由 mainFill 内联注入(默认取皮肤 accent 令牌,用户自定色覆盖暖端),
+   闲置态不绑内联让 .idle 的去渐变降白生效。
+   填充透明化后 text-shadow 会透进字形,可读性用单层柔影兜底 */
 .line-main {
   font-size: clamp(34px, 25.6vh, 61px);
   font-weight: 800;
@@ -226,7 +256,6 @@ onUnmounted(() => {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: linear-gradient(100deg, #ffffff 34%, #ffe9e2 58%, #f0a08e 120%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -270,14 +299,14 @@ onUnmounted(() => {
   width: min(60%, 320px);
   height: 2.5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
+  background: color-mix(in srgb, var(--text) 20%, transparent);
   overflow: hidden;
   margin-top: 2px;
 }
 .progress-fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.9), var(--accent));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--text) 80%, transparent), var(--accent));
   transition: width 0.25s linear;
 }
 
@@ -290,12 +319,13 @@ onUnmounted(() => {
   gap: 8px;
   padding: 7px 14px;
   border-radius: 999px;
-  /* 烟熏玻璃胶囊:窗口背外无内容可采,用近实心渐变 + 顶缘高光模拟 */
-  background: linear-gradient(180deg, rgba(50, 52, 56, 0.96) 0%, rgba(20, 21, 24, 0.96) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  /* 胶囊配色走皮肤令牌:深色主题近黑烟熏、浅色/纸质为米白纸片,
+     三套皮肤自动换装;半透明保留悬浮感,外投影维持与桌面的分层 */
+  background: color-mix(in srgb, var(--bg-2) 88%, transparent);
+  border: 1px solid var(--hairline);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 8px 28px rgba(0, 0, 0, 0.45);
+    inset 0 1px 0 color-mix(in srgb, var(--text) 10%, transparent),
+    0 8px 28px rgba(0, 0, 0, 0.4);
   opacity: 0;
   transform: translateY(6px);
   transition: opacity 0.28s var(--ease-out-soft), transform 0.28s var(--ease-out-soft);
@@ -308,7 +338,7 @@ onUnmounted(() => {
 .song {
   font-size: 12px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text);
   max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -318,7 +348,7 @@ onUnmounted(() => {
   width: 1px;
   height: 16px;
   flex: none;
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--hairline);
 }
 .gap {
   width: 8px;
@@ -331,7 +361,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--text-2);
   transition: color 0.18s ease, background 0.18s ease, transform 0.25s var(--ease-spring);
 }
 .cbtn svg {
@@ -339,8 +369,8 @@ onUnmounted(() => {
   height: 15px;
 }
 .cbtn:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  background: var(--hover);
 }
 .cbtn:active {
   transform: scale(0.88);
