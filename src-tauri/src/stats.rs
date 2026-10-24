@@ -11,6 +11,8 @@ use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::model::{backup_path, tmp_path};
+
 pub(crate) const STATS_FILE: &str = "stats.json";
 
 /// 单曲统计:累计收听秒数、播放次数(前端按「≥半曲或 ≥4 分钟」判定)、最后收听时刻
@@ -171,24 +173,6 @@ impl StatsData {
             *self.days_online.entry(day.to_string()).or_insert(0.0) += online_sec;
         }
     }
-}
-
-fn tmp_path(path: &Path) -> std::path::PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "stats.json".into());
-    name.push_str(".tmp");
-    path.with_file_name(name)
-}
-
-fn backup_path(path: &Path) -> std::path::PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "stats.json".into());
-    name.push_str(".bak");
-    path.with_file_name(name)
 }
 
 #[cfg(test)]

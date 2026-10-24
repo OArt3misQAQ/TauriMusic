@@ -109,22 +109,29 @@ impl Library {
         serde_json::from_slice(&bytes).ok()
     }
 
-    /// 原子保存:先写临时文件,把现有文件备份为 .bak,再 rename 落盘。
-    /// 任何一步失败都不会破坏已有数据。
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+    /// 纯序列化,不做任何 IO:调用方在持有曲库锁期间只允许调这个,
+    /// 磁盘写入交给锁外的 write_bytes(整库 JSON 可达数 MB,fsync/两次 rename
+    /// 在慢盘上是几十毫秒级,不该占着锁挡住其他命令)
+    pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    }
+
+    /// 原子落盘:先写临时文件,把现有文件备份为 .bak,再 rename 落盘。
+    /// 任何一步失败都不会破坏已有数据。必须在锁外调用(内部有 fsync 与两次 rename)。
+    /// 与 to_bytes 配套使用:锁内 to_bytes → drop guard → write_bytes
+    pub fn write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         let tmp = tmp_path(path);
         {
             // 数据先 sync 再谈 rename:掉电时 rename 可能先于内容写入持久层,
             // 最坏情况是"最新一次保存丢失"(有 .bak 兜底),不能更糟
             let mut f = fs::File::create(&tmp)?;
-            f.write_all(&json)?;
+            f.write_all(bytes)?;
             f.sync_all()?;
         }
 
@@ -139,7 +146,7 @@ impl Library {
         match fs::rename(&tmp, path) {
             Ok(()) => Ok(()),
             Err(_) => {
-                fs::write(path, &json)?;
+                fs::write(path, bytes)?;
                 let _ = fs::remove_file(&tmp);
                 Ok(())
             }
@@ -147,22 +154,25 @@ impl Library {
     }
 }
 
-fn tmp_path(path: &Path) -> std::path::PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "library.json".into());
-    name.push_str(".tmp");
-    path.with_file_name(name)
+/// 原子写的临时文件伴生路径(同目录 <name>.tmp)。
+/// library.json 与 stats.json 共用同一套 tmp→bak→rename 语义,规则必须一致,
+/// 因此下沉到 model 统一维护(此前两处各写一份,已有漂移风险)
+pub(crate) fn tmp_path(path: &Path) -> std::path::PathBuf {
+    sibling_path(path, ".tmp")
 }
 
-fn backup_path(path: &Path) -> std::path::PathBuf {
-    let mut name = path
+/// 原子写的备份伴生路径(同目录 <name>.bak)
+pub(crate) fn backup_path(path: &Path) -> std::path::PathBuf {
+    sibling_path(path, ".bak")
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+    // 无文件名的极端情形(路径以分隔符结尾)实际不可达,给个无害占位名即可
+    let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "library.json".into());
-    name.push_str(".bak");
-    path.with_file_name(name)
+        .unwrap_or_else(|| "file".into());
+    path.with_file_name(format!("{name}{suffix}"))
 }
 
 /// 扫描结果报告
@@ -212,7 +222,7 @@ mod tests {
             }],
         };
         let path = std::env::temp_dir().join(format!("tm-lib-{}.json", std::process::id()));
-        lib.save(&path).unwrap();
+        Library::write_bytes(&path, &lib.to_bytes().unwrap()).unwrap();
         let back = Library::load(&path);
         assert_eq!(back.version, 2);
         assert_eq!(back.folders, lib.folders);
@@ -230,6 +240,26 @@ mod tests {
         let lib = Library::load(Path::new("Z:\\nonexistent\\tm-lib.json"));
         assert!(lib.tracks.is_empty());
         assert_eq!(lib.version, 0);
+    }
+
+    #[test]
+    fn to_bytes_is_pure_serialization_without_io() {
+        // 拆分后的约定:to_bytes 不做任何 IO,落盘全部走锁外 write_bytes。
+        // 若 to_bytes 悄悄碰了文件系统,锁内调用会重新引入持锁 IO
+        let lib = Library {
+            version: 1,
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!("tm-lib-pure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.json");
+        let bytes = lib.to_bytes().unwrap();
+        assert!(!path.exists(), "to_bytes 不得产生文件");
+        assert!(!tmp_path(&path).exists() && !backup_path(&path).exists());
+        Library::write_bytes(&path, &bytes).unwrap();
+        assert_eq!(Library::load(&path).version, 1, "字节应能原样落盘读回");
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -251,8 +281,9 @@ mod tests {
             }],
         };
         // 真实使用节奏:至少保存两次后主文件与备份同时存在
-        lib.save(&path).unwrap();
-        lib.save(&path).unwrap();
+        let bytes = lib.to_bytes().unwrap();
+        Library::write_bytes(&path, &bytes).unwrap();
+        Library::write_bytes(&path, &bytes).unwrap();
         assert!(bak.exists(), "覆盖保存后应留有 .bak");
 
         // 模拟写一半崩溃:主文件截断损坏
@@ -282,7 +313,8 @@ mod tests {
                 ..Default::default()
             }],
         };
-        first.save(&path).unwrap();
+        let first_bytes = first.to_bytes().unwrap();
+        Library::write_bytes(&path, &first_bytes).unwrap();
         let second = Library {
             version: 2,
             folders: vec![],
@@ -294,8 +326,9 @@ mod tests {
                 ..Default::default()
             }],
         };
-        second.save(&path).unwrap();
-        second.save(&path).unwrap(); // 连续保存也稳定
+        let second_bytes = second.to_bytes().unwrap();
+        Library::write_bytes(&path, &second_bytes).unwrap();
+        Library::write_bytes(&path, &second_bytes).unwrap(); // 连续保存也稳定
 
         let back = Library::load(&path);
         assert_eq!(back.version, 2);

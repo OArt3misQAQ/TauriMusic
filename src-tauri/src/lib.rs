@@ -12,8 +12,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use tauri::{ipc::InvokeResponseBody, Emitter, Listener, Manager, State, WindowEvent};
+// 跨源标签归一化与酷我字段解析助手已下沉到 online.rs(纯函数,测试随迁),
+// 在线匹配链(网易云/LRCLIB/iTunes/酷我兜底)在这里直接复用
+use online::{
+    artist_matches, build_lrc_from_kuwo, html_unescape, kuwo_keywords, name_matches, normalize_tag,
+    strip_bracketed, title_is_live,
+};
+// examples/make_tmc 的在线匹配调试入口从 crate 根取网易云客户端,保持原路径可用
+pub use online::netease_client;
 
 /// 统计落盘节流:上次持久化的 unix 秒。内存态每次冲刷都合并,
 /// 磁盘全量重写(stats.json 随历史增长)压到最低 2 分钟一次,强冲不受限
@@ -50,6 +58,18 @@ pub struct AppState {
 }
 
 pub(crate) const LIBRARY_FILE: &str = "library.json";
+
+/// 写库命令与扫描互斥的公共闸:必须先于曲库锁获取(全仓库统一「闸→lib」加锁顺序,
+/// 反序会在"扫描持闸等 lib"与"写库持 lib 等闸"之间死锁)。
+/// 用阻塞锁而非 try_lock 放行:扫描期间曲目被扫描器借走(lib.tracks 为空),
+/// 放行写库命令会把 tracks 为空的中间态持久化进 library.json——崩溃后主文件是
+/// 合法 JSON,连 .bak 回退都不会触发,等于丢库;排队等扫描收尾同时也消除了
+/// "删除/还原与扫描整体替换 tracks"的复活竞态
+pub(crate) fn lock_scan_gate(state: &AppState) -> MutexGuard<'_, ()> {
+    // 上次扫描线程 panic 后锁中毒:恢复互斥数据继续,
+    // 把"毒化"误报成"占用"会让之后的写库命令永久失败
+    state.scan_gate.lock().unwrap_or_else(|e| e.into_inner())
+}
 /// 应用回收站目录(data_dir/Trash):删除的音乐移到这里,保留 TRASH_RETENTION_DAYS 天
 pub(crate) const TRASH_DIR_NAME: &str = "Trash";
 /// 回收站保留天数:超期在启动时自动清理
@@ -72,16 +92,32 @@ fn refresh_asset_scope(app: &tauri::AppHandle) {
 }
 
 /// 确保导入目录存在,并把它登记进曲库扫描来源。
-/// 先落盘成功再改内存,落盘失败时内存态不发生变化。
+/// 先落盘成功再改内存语义:落盘失败时回滚内存,内存态不发生变化。
+/// 已登记的快路径不碰扫描闸(get_import_dir 是同步命令,不能在扫描期间卡主线程);
+/// 真要写库时才闸→锁依次拿,与全仓库加锁顺序一致
 fn ensure_import_dir(app: &tauri::AppHandle, state: &AppState) -> Result<PathBuf, String> {
     let dir = state.data_dir.join(IMPORT_DIR_NAME);
     fs::create_dir_all(&dir).map_err(|e| format!("创建导入目录失败: {e}"))?;
-    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
     let path = dir.to_string_lossy().to_string();
+    {
+        let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        if lib.folders.iter().any(|f| f == &path) {
+            return Ok(dir);
+        }
+    }
+    let _gate = lock_scan_gate(state);
+    let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+    // 双检:等闸期间可能已被其他导入登记
     if !lib.folders.iter().any(|f| f == &path) {
-        lib.folders.push(path);
-        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
-            lib.folders.pop();
+        lib.folders.push(path.clone());
+        // 锁内只序列化,磁盘 IO 在锁外
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        if let Err(e) = Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes) {
+            // 重新拿锁回滚:按值移除而非 pop,避免等锁期间的并发登记让序号错位
+            if let Ok(mut lib) = state.lib.lock() {
+                lib.folders.retain(|f| *f != path);
+            }
             return Err(e.to_string());
         }
         refresh_asset_scope(app);
@@ -152,8 +188,10 @@ fn import_loose(
     let mut duplicates = 0u32;
     let mut session_shas: Vec<(PathBuf, String)> = Vec::new();
 
-    // 短锁:登记文件夹 + 快照去重基准(路径/大小 与 SHA 指纹)
-    let (mut known, known_shas) = {
+    // 短闸 + 短锁:登记文件夹与落盘只在这里互斥扫描;文件复制(可能分钟级)
+    // 不占闸,别把用户手动触发的扫描挡在门外
+    let (mut known, known_shas, pending_bytes) = {
+        let _gate = lock_scan_gate(state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let mut dirty = false;
         for raw in paths {
@@ -167,10 +205,12 @@ fn import_loose(
                 }
             }
         }
-        if dirty {
-            lib.save(&state.data_dir.join(LIBRARY_FILE))
-                .map_err(|e| e.to_string())?;
-        }
+        // 锁内只序列化;落盘在锁外(与原实现一致:失败上抛,已 push 的文件夹留在内存)
+        let bytes = if dirty {
+            Some(lib.to_bytes().map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
         let known = lib
             .tracks
             .iter()
@@ -181,8 +221,12 @@ fn import_loose(
             .iter()
             .filter_map(|t| t.sha256.as_deref().map(|s| s.to_ascii_lowercase()))
             .collect::<std::collections::HashSet<_>>();
-        (known, shas)
+        (known, shas, bytes)
     };
+    if let Some(bytes) = pending_bytes {
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
+            .map_err(|e| e.to_string())?;
+    }
 
     // 锁外:复制文件(内容哈希在这里发生)
     for raw in paths {
@@ -1469,7 +1513,7 @@ fn stage_tmca_blocking(
             "genre": tracks[0].genre,
             "cover": root_cover,
             "coverSha256": cover_sha,
-            "createdAt": now_secs(),
+            "createdAt": now_secs_f64(),
             "tracks": items,
         });
         fs::write(
@@ -1717,14 +1761,13 @@ fn online_cover_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            online::build_http_client(online::HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: online::BROWSER_UA,
+                referer: None,
+                cookie: None,
+                follow_redirects: false,
+            })
         })
         .clone()
 }
@@ -1813,13 +1856,13 @@ fn download_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            online::build_http_client(online::HttpClientSpec {
+                timeout: std::time::Duration::from_secs(300),
+                ua: online::BROWSER_UA,
+                referer: None,
+                cookie: None,
+                follow_redirects: true,
+            })
         })
         .clone()
 }
@@ -1937,11 +1980,13 @@ fn online_download_blocking(
     let resp = download_client()
         .get(&url)
         .send()
-        .map_err(|e| format!("下载请求失败: {e}"))?;
+        .map_err(|e| online::net_err("下载请求失败", &e))?;
     if !resp.status().is_success() {
         return Err(format!("下载失败(HTTP {})", resp.status().as_u16()));
     }
-    let bytes = resp.bytes().map_err(|e| format!("下载中断: {e}"))?;
+    let bytes = resp
+        .bytes()
+        .map_err(|_| "下载中断,请检查网络后重试".to_string())?;
     if bytes.is_empty() {
         return Err("下载内容为空,请稍后重试".into());
     }
@@ -1955,29 +2000,33 @@ fn online_download_blocking(
     let ext = media_ext_from_url(&url);
     let staging = std::env::temp_dir().join(format!("taurimusic-dl-{nanos}"));
     fs::create_dir_all(&staging).map_err(|e| format!("创建临时目录失败: {e}"))?;
-    let tmp = staging.join(format!("{stem}.{ext}"));
-    fs::write(&tmp, &bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    // 4. 顺带取在线封面嵌进标签、歌词写成同名 .lrc:入库件即刻带图文,
-    //    两者失败都不致命(后续可用在线匹配补齐)
-    let cover = ensure_online_cover(source, id, cover_url.as_deref(), app)
-        .ok()
-        .flatten()
-        .map(PathBuf::from);
-    let _ = write_audio_tags(&tmp, name, artist, album, cover.as_deref());
-    let mut pending = vec![tmp.to_string_lossy().into_owned()];
-    let lrc_tmp = tmp.with_extension("lrc");
-    if let Ok(Some(payload)) = online::lyric_payload(source, id) {
-        if let Some(text) = lyrics::render(&payload) {
-            if fs::write(&lrc_tmp, text).is_ok() {
-                pending.push(lrc_tmp.to_string_lossy().into_owned());
+    // 从这里起任何一步失败都要清掉临时目录:导入管线对暂存件只读(复制走),
+    // 成功与失败 alike 都不再需要它。闭包统一收尾,防 `?` 早退泄漏
+    let report = (|| -> Result<ImportReport, String> {
+        let tmp = staging.join(format!("{stem}.{ext}"));
+        fs::write(&tmp, &bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
+        // 顺带取在线封面嵌进标签、歌词写成同名 .lrc:入库件即刻带图文,
+        // 两者失败都不致命(后续可用在线匹配补齐)
+        let cover = ensure_online_cover(source, id, cover_url.as_deref(), app)
+            .ok()
+            .flatten()
+            .map(PathBuf::from);
+        let _ = write_audio_tags(&tmp, name, artist, album, cover.as_deref());
+        let mut pending = vec![tmp.to_string_lossy().into_owned()];
+        let lrc_tmp = tmp.with_extension("lrc");
+        if let Ok(Some(payload)) = online::lyric_payload(source, id) {
+            if let Some(text) = lyrics::render(&payload) {
+                if fs::write(&lrc_tmp, text).is_ok() {
+                    pending.push(lrc_tmp.to_string_lossy().into_owned());
+                }
             }
         }
-    }
-    // 5. 复用散装导入管线:复制进导入目录 + 全量扫描 + 指纹记录 + 事件广播
-    let report = import_paths_blocking(&pending, app)?;
+        // 复用散装导入管线:复制进导入目录 + 全量扫描 + 指纹记录 + 事件广播
+        import_paths_blocking(&pending, app)
+    })();
     // 临时目录整体清掉:音频与旁路歌词成对生成,也成对消失
     let _ = fs::remove_dir_all(&staging);
-    Ok(report)
+    report
 }
 
 fn netease_enrich_blocking(
@@ -2006,7 +2055,7 @@ fn netease_enrich_blocking(
         return Err("未找到该专辑的曲目".into());
     }
 
-    let client = netease_client();
+    let client = online::netease_client();
 
     let mut report = NeteaseReport {
         cover: false,
@@ -2030,7 +2079,10 @@ fn netease_enrich_blocking(
                 )
             });
         match pic_url {
-            Some(pic_url) => match fetch_capped_allow_http(&generic_client(), &pic_url) {
+            // 封面下载与在线曲目封面(ensure_online_cover)同一威胁模型:
+            // URL 来自接口 JSON,30x 可能把请求带去白名单外/内网,统一禁止重定向。
+            // 三级兜底给出的直链本身已是 https 或带 http→https 首选回退,不依赖 30x
+            Some(pic_url) => match fetch_capped_allow_http(&online_cover_client(), &pic_url) {
                 Some(bytes) => {
                     let mut dirs: Vec<PathBuf> = tracks
                         .iter()
@@ -2141,7 +2193,18 @@ fn netease_enrich_blocking(
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
+            .flat_map(|h| match h.join() {
+                Ok(v) => v,
+                Err(payload) => {
+                    // 单个分块 worker panic 只丢这一块的歌词匹配,不该炸整个命令;
+                    // 但必须留痕,静默吞掉(unwrap_or_default)会让"补词无结果"无从排查
+                    eprintln!(
+                        "[enrich] 歌词匹配 worker panic: {}",
+                        panic_message(&*payload)
+                    );
+                    Vec::new()
+                }
+            })
             .collect()
     });
     for (t, result) in targets.iter().zip(results) {
@@ -2212,106 +2275,6 @@ fn fetch_capped_inner(
     let mut buf = Vec::new();
     resp.take(COVER_MAX_BYTES + 1).read_to_end(&mut buf).ok()?;
     (buf.len() as u64 <= COVER_MAX_BYTES).then_some(buf)
-}
-
-pub fn netease_client() -> reqwest::blocking::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .default_headers(
-                    reqwest::header::HeaderMap::from_iter([
-                        (
-                            reqwest::header::REFERER,
-                            "https://music.163.com".parse().unwrap(),
-                        ),
-                        (
-                            reqwest::header::COOKIE,
-                            "os=pc; appver=2.9.7".parse().unwrap(),
-                        ),
-                    ]),
-                )
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
-        })
-        .clone()
-}
-
-/// 繁体转简体(进程级单例转换器):normalize_tag 与现场版识别共用
-fn to_simplified(s: &str) -> String {
-    use character_converter::CharacterConverter;
-    static CONVERTER: std::sync::OnceLock<CharacterConverter> = std::sync::OnceLock::new();
-    CONVERTER
-        .get_or_init(CharacterConverter::new)
-        .traditional_to_simplified(s)
-}
-
-/// 归一化标签用于跨源比对:繁体转简体 + 小写 + 去空白(本地标签常见繁体/大小写差异)
-fn normalize_tag(s: &str) -> String {
-    to_simplified(s)
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect()
-}
-
-/// 标题是否带现场/演唱会标记:live 需独立成词(避免 Alive/Livin' 误判),
-/// 中文无词边界直接子串判。现场版与录音室版的时间轴完全不同,选错版歌词必错位
-fn title_is_live(s: &str) -> bool {
-    let norm = to_simplified(s).to_lowercase();
-    if norm.contains("现场") || norm.contains("演唱会") || norm.contains("实况") {
-        return true;
-    }
-    norm.split(|c: char| !c.is_ascii_alphabetic())
-        .any(|w| w == "live")
-}
-
-/// 归一化后的双向包含比对
-fn name_matches(a: &str, b: &str) -> bool {
-    let (a, b) = (normalize_tag(a), normalize_tag(b));
-    !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
-}
-
-/// 艺人组任一分段与候选名比对成功即通过
-fn artist_matches(artist: &str, candidate: &str) -> bool {
-    artist
-        .split(['/', '&', ',', '、'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .any(|seg| name_matches(seg, candidate))
-}
-
-/// 去掉标题里的括号段(全角/半角):酷我搜索对括号敏感,
-/// 「八千里路明月照（挥笔生花问桀骜）」整串搜索命中不了原曲,去掉后能精确命中
-fn strip_bracketed(s: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0u32;
-    for c in s.chars() {
-        match c {
-            '(' | '（' | '【' | '「' | '『' | '[' => depth += 1,
-            ')' | '）' | '】' | '」' | '』' | ']' => {
-                depth = depth.saturating_sub(1);
-                out.push(' ');
-            }
-            c if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<&str>>().join(" ")
-}
-
-/// 酷我搜索关键词:完整标题优先,有括号段时再补一条去括号的
-fn kuwo_keywords(title: &str, artist: &str) -> Vec<String> {
-    let mut keys = vec![format!("{title} {artist}")];
-    let stripped = strip_bracketed(title);
-    if !stripped.is_empty() && stripped != title {
-        keys.push(format!("{stripped} {artist}"));
-    }
-    keys
 }
 
 fn netease_search(
@@ -2517,20 +2480,19 @@ fn netease_backfill_translation(
 
 // ===== LRCLIB 歌词兜底 + iTunes 封面兜底(公开接口,无需密钥) =====
 
-/// 通用 HTTP 客户端(LRCLIB / iTunes 等公开接口):仅带标识 UA,不带网易云的站头
+/// 通用 HTTP 客户端(LRCLIB / iTunes 等公开接口):仅带标识 UA,不带网易云的站头。
+/// 只用于 JSON 接口调用;抓图必须走禁止重定向的 online_cover_client
 pub fn generic_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(concat!(
-                    "TauriMusic/",
-                    env!("CARGO_PKG_VERSION"),
-                    " (https://github.com/OArt3misQAQ/TauriMusic)"
-                ))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            online::build_http_client(online::HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: online::APP_UA,
+                referer: None,
+                cookie: None,
+                follow_redirects: true,
+            })
         })
         .clone()
 }
@@ -2745,134 +2707,14 @@ pub fn itunes_album_cover(album: &str, album_artist: &str) -> Option<String> {
 
 // ===== 酷我歌词兜底(公开接口,免登录) =====
 
-/// 酷我 r.s 返回单引号伪 JSON,转成严格 JSON:
-/// 仅当引号紧邻结构性字符(前一字符为 {[,: 或后一字符为 }],:)时视为定界符,
-/// 值内部的撇号(Don't)原样保留;找不到定界符时解析会失败并走优雅降级
-fn kuwo_fix_json(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut prev = '\0';
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '\'' {
-            let prev_struct = matches!(prev, '\0' | '{' | '[' | ':' | ',');
-            let mut next = ' ';
-            for &n in &chars[i + 1..] {
-                if !n.is_whitespace() {
-                    next = n;
-                    break;
-                }
-            }
-            let next_struct = matches!(next, '\0' | '}' | ']' | ':' | ',');
-            out.push(if prev_struct || next_struct {
-                '"'
-            } else {
-                '\''
-            });
-        } else {
-            out.push(c);
-        }
-        prev = c;
-    }
-    out
-}
-
-/// 酷我字段里的 HTML 实体解码(&apos; &nbsp; &amp; 等,数字实体一并处理)
-fn html_unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(pos) = rest.find('&') {
-        out.push_str(&rest[..pos]);
-        rest = &rest[pos..];
-        let end = rest.find(';').map(|e| e + 1).unwrap_or(0);
-        if end == 0 || end > 10 {
-            out.push('&');
-            rest = &rest[1..];
-            continue;
-        }
-        let entity = &rest[..end];
-        let decoded = match entity {
-            "&apos;" | "&#39;" => Some('\''),
-            "&quot;" => Some('"'),
-            "&nbsp;" => Some('\u{a0}'),
-            "&amp;" => Some('&'),
-            "&lt;" => Some('<'),
-            "&gt;" => Some('>'),
-            _ => entity
-                .strip_prefix("&#")
-                .and_then(|n| n.strip_suffix(';'))
-                .and_then(|n| {
-                    u32::from_str_radix(
-                        n.trim_start_matches('x'),
-                        if n.starts_with('x') { 16 } else { 10 },
-                    )
-                    .ok()
-                })
-                .and_then(char::from_u32),
-        };
-        match decoded {
-            Some(c) => {
-                out.push(c);
-                rest = &rest[end..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// 把酷我 lrclist(time 为秒字符串)拼成标准 LRC 文本
-fn build_lrc_from_kuwo(lines: &[serde_json::Value]) -> Option<String> {
-    let mut out = String::new();
-    for l in lines {
-        let Some(text) = l["lineLyric"].as_str() else {
-            continue;
-        };
-        let t = l["time"]
-            .as_str()
-            .and_then(|s| s.trim().parse::<f64>().ok())
-            .or_else(|| l["time"].as_f64());
-        let Some(t) = t else { continue };
-        let mut m = (t / 60.0).floor() as i64;
-        let mut s = t - m as f64 * 60.0;
-        if s >= 59.995 {
-            m += 1;
-            s = 0.0;
-        }
-        out.push_str(&format!("[{m:02}:{s:05.2}]{text}\n"));
-    }
-    (!out.is_empty()).then(|| out.trim_end().to_string())
-}
-
-/// 酷我歌曲搜索:返回 abslist 列表(单引号伪 JSON 已修复为严格 JSON)
+/// 酷我歌曲搜索:返回 abslist 列表。
+/// 走 online::kuwo_rs_search 统一实现;参数保持本地匹配链的旧档
+/// (client=mp + vipver + rn=10,与在线搜索的 kt/30 分叉是历史现状,不改线上行为)
 fn kuwo_search(
     client: &reqwest::blocking::Client,
     keyword: &str,
 ) -> Option<Vec<serde_json::Value>> {
-    let resp = client
-        .get("https://search.kuwo.cn/r.s")
-        .query(&[
-            ("all", keyword.to_string()),
-            ("ft", "music".to_string()),
-            ("itemset", "web_2013".to_string()),
-            ("client", "mp".to_string()),
-            ("pn", "0".to_string()),
-            ("rn", "10".to_string()),
-            ("rformat", "json".to_string()),
-            ("encoding", "utf8".to_string()),
-            ("vipver", "MUSIC_8.0.3.2_QQZS".to_string()),
-        ])
-        .send()
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let raw = resp.text().ok()?;
-    let v: serde_json::Value = serde_json::from_str(&kuwo_fix_json(&raw)).ok()?;
-    v["abslist"].as_array().cloned()
+    online::kuwo_rs_search(client, keyword, 0, 10, "mp", Some("MUSIC_8.0.3.2_QQZS")).ok()
 }
 
 /// 酷我歌曲详情(必须带 m 站 Referer,否则报「音乐查询失败」):返回 data 节点。
@@ -3086,23 +2928,31 @@ fn delete_tracks_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<Dele
     let import_dir = state.data_dir.join("Music");
     let trash_dir = state.data_dir.join(TRASH_DIR_NAME);
 
-    // 1) 锁内:取出匹配曲目并先从曲库移除(避免长时间持锁做文件搬运)
+    // 1) 锁内:取出匹配曲目并先从曲库移除(避免长时间持锁做文件搬运)。
+    //    先拿扫描闸:扫描期间曲目被借走,并发删除会把空曲库落盘、
+    //    或在扫描整体替换 tracks 时被"复活"
     let to_delete: Vec<model::Track> = {
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let id_set: std::collections::HashSet<&String> = ids.iter().collect();
         let (del, kept): (Vec<model::Track>, Vec<model::Track>) =
             lib.tracks.drain(..).partition(|t| id_set.contains(&t.id));
         lib.tracks = kept;
-        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
-            // 落盘失败必须回滚内存:否则界面少了歌而磁盘没少,重启后又"复活"
-            lib.tracks.extend(del);
+        // 锁内只序列化,落盘在锁外;失败重拿锁回滚,否则界面少了歌而磁盘没少,
+        // 重启后又"复活"
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        if let Err(e) = Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes) {
+            if let Ok(mut lib) = state.lib.lock() {
+                lib.tracks.extend(del);
+            }
             return Err(e.to_string());
         }
         del
     };
 
     // 2) 锁外:移入应用回收站(音频 + 同名歌词)
-    let now = now_secs();
+    let now = now_secs_f64();
     let mut entries: Vec<TrashEntry> = Vec::new();
     let mut failed_tracks: Vec<model::Track> = Vec::new();
     let mut parents: Vec<PathBuf> = Vec::new();
@@ -3142,12 +2992,16 @@ fn delete_tracks_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<Dele
         }
     }
 
-    // 3) 锁内:回收站条目落库;失败的回填曲库,避免幽灵状态
+    // 3) 锁内:回收站条目落库;失败的回填曲库,避免幽灵状态。
+    //    整段本就在同一个闸的保护下(步骤 1 已拿),这里只需短锁序列化
     {
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         lib.trash.extend(entries);
         lib.tracks.extend(failed_tracks.iter().cloned());
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
     }
     if !failed_tracks.is_empty() {
@@ -3258,6 +3112,9 @@ fn restore_tracks_blocking(
     app: &tauri::AppHandle,
 ) -> Result<RestoreReport, String> {
     let state = app.state::<AppState>();
+    // 先拿扫描闸:扫描期间曲目被借走,并发还原会把还原件推进空曲库再落盘,
+    // 或在扫描整体替换 tracks 时被"复活"
+    let _gate = lock_scan_gate(&state);
     let all = {
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         if ids.is_empty() {
@@ -3292,7 +3149,10 @@ fn restore_tracks_blocking(
             restored.iter().map(|(t, _)| t.id.as_str()).collect();
         failed.retain(|e| !ok_ids.contains(e.track.id.as_str()));
         lib.trash.extend(failed);
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        // 锁内只序列化,磁盘 IO 在锁外(失败时内存保持已变更,与原实现一致)
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
     }
     let _ = app.emit("library-changed", ());
@@ -3333,8 +3193,14 @@ fn purge_trash_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<u32, S
         }
     }
     if !purged.is_empty() {
-        let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        // 落盘同样要互斥扫描:此刻 lib.tracks 可能被扫描借走,直接序列化会把
+        // 空曲库写进磁盘
+        let bytes = {
+            let _gate = lock_scan_gate(&state);
+            let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+            lib.to_bytes().map_err(|e| e.to_string())?
+        };
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
     }
     Ok(purged.len() as u32)
@@ -3343,7 +3209,7 @@ fn purge_trash_blocking(ids: &[String], app: &tauri::AppHandle) -> Result<u32, S
 /// 清理超过保留期的回收站条目(启动时调用)
 fn purge_expired_trash(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let cutoff = now_secs() - TRASH_RETENTION_DAYS * 86400.0;
+    let cutoff = now_secs_f64() - TRASH_RETENTION_DAYS * 86400.0;
     let expired: Vec<model::TrashEntry> = {
         let mut lib = state.lib.lock().unwrap_or_else(|e| e.into_inner());
         let (exp, keep): (Vec<model::TrashEntry>, Vec<model::TrashEntry>) =
@@ -3363,7 +3229,12 @@ fn purge_expired_trash(app: &tauri::AppHandle) {
         }
     }
     if let Ok(lib) = state.lib.lock() {
-        let _ = lib.save(&state.data_dir.join(LIBRARY_FILE));
+        // 启动清理是非关键路径,失败仅忽略(与原实现一致);
+        // 序列化在锁内、落盘在锁外
+        if let Ok(bytes) = lib.to_bytes() {
+            drop(lib);
+            let _ = Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes);
+        }
     }
     eprintln!("[trash] 清理超期回收站条目 {} 条", expired.len());
 }
@@ -3391,7 +3262,9 @@ fn sha256_hex(path: &Path) -> Option<String> {
     Some(to_hex(w.0.finalize().as_slice()))
 }
 
-fn now_secs() -> f64 {
+/// 当前 unix 秒(带小数):与 stats::now_secs()(整数,统计 last 用)语义不同,
+/// 刻意按返回类型命名消歧——回收站时间戳/歌单创建时间是 f64 秒
+fn now_secs_f64() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -3401,7 +3274,7 @@ fn now_secs() -> f64 {
 fn new_playlist_id(name: &str) -> String {
     format!(
         "{:016x}",
-        scanner::hash_str(&format!("{name}:{}", now_secs()))
+        scanner::hash_str(&format!("{name}:{}", now_secs_f64()))
     )
 }
 
@@ -3444,6 +3317,8 @@ async fn create_playlist(
         if name.is_empty() {
             return Err("播放列表名称不能为空".into());
         }
+        // 写库一律互斥扫描:扫描期间曲目被借走,照常落盘会持久化空曲库
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         if lib.playlists.iter().any(|p| p.name == name) {
             return Err("已存在同名播放列表".into());
@@ -3451,12 +3326,16 @@ async fn create_playlist(
         lib.playlists.push(model::Playlist {
             id: new_playlist_id(&name),
             name,
-            created_at: now_secs(),
+            created_at: now_secs_f64(),
             entries: Vec::new(),
         });
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let playlists = lib.playlists.clone();
+        // 锁内只序列化,磁盘 IO 在锁外
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
-        Ok(lib.playlists.clone())
+        Ok(playlists)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3474,6 +3353,7 @@ async fn rename_playlist(
         if name.is_empty() {
             return Err("播放列表名称不能为空".into());
         }
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         if lib.playlists.iter().any(|p| p.id != id && p.name == name) {
             return Err("已存在同名播放列表".into());
@@ -3484,9 +3364,12 @@ async fn rename_playlist(
             .find(|p| p.id == id)
             .ok_or("播放列表不存在")?;
         pl.name = name;
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let playlists = lib.playlists.clone();
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
-        Ok(lib.playlists.clone())
+        Ok(playlists)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3499,11 +3382,15 @@ async fn delete_playlist(
 ) -> Result<Vec<model::Playlist>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         lib.playlists.retain(|p| p.id != id);
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let playlists = lib.playlists.clone();
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
-        Ok(lib.playlists.clone())
+        Ok(playlists)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3526,6 +3413,7 @@ async fn add_tracks_to_playlist(
 ) -> Result<AddToPlaylistReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let mut resolved: Vec<model::PlaylistEntry> = Vec::new();
         let by_id: std::collections::HashMap<&str, &model::Track> =
@@ -3555,13 +3443,16 @@ async fn add_tracks_to_playlist(
                 }
             }
         }
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
-            .map_err(|e| e.to_string())?;
-        Ok(AddToPlaylistReport {
+        let report = AddToPlaylistReport {
             added,
             skipped,
             playlists: lib.playlists.clone(),
-        })
+        };
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(report)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3575,6 +3466,7 @@ async fn remove_playlist_entry(
 ) -> Result<Vec<model::Playlist>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let pl = lib
             .playlists
@@ -3584,9 +3476,12 @@ async fn remove_playlist_entry(
         if index < pl.entries.len() {
             pl.entries.remove(index);
         }
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let playlists = lib.playlists.clone();
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
-        Ok(lib.playlists.clone())
+        Ok(playlists)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3602,6 +3497,7 @@ async fn move_playlist_entry(
 ) -> Result<Vec<model::Playlist>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let pl = lib
             .playlists
@@ -3614,9 +3510,12 @@ async fn move_playlist_entry(
         }
         let e = pl.entries.remove(from);
         pl.entries.insert(to, e);
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let playlists = lib.playlists.clone();
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
-        Ok(lib.playlists.clone())
+        Ok(playlists)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3834,34 +3733,50 @@ fn record_track_shas(state: &AppState, pairs: &[(PathBuf, String)]) -> Result<()
     }
     let import_dir = state.data_dir.join(IMPORT_DIR_NAME);
     let import_str = import_dir.to_string_lossy().to_string();
+    // 落盘要互斥扫描:此刻 lib.tracks 可能被扫描借走
+    let _gate = lock_scan_gate(state);
     let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+    // 一次性建索引:此前每对 (path,sha) 都线性扫全库,还逐轨重复分配 norm_path,
+    // 千级曲库 × 多文件导入时是平方级的重复分配与比较
+    let mut by_norm: HashMap<String, usize> = HashMap::with_capacity(lib.tracks.len());
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, t) in lib.tracks.iter().enumerate() {
+        // 精确匹配 ⇒ 规范化必匹配,故规范化索引记首个命中即可(与逐轨扫描的
+        // position 语义一致);无文件名的极端路径进不了兜底索引,走不到兜底分支
+        by_norm.entry(norm_path(&t.path)).or_insert(i);
+        if t.sha256.is_none() && is_under(&t.path, &import_str) {
+            if let Some(name) = Path::new(&t.path).file_name() {
+                by_name
+                    .entry(name.to_string_lossy().to_string())
+                    .or_default()
+                    .push(i);
+            }
+        }
+    }
     for (path, sha) in pairs {
         let abs_str = path.to_string_lossy().replace('/', "\\");
         let abs_norm = norm_path(&abs_str);
         let sha = sha.to_ascii_lowercase();
         // 先按记录时的原始路径精确/规范化匹配;散装导入的文件随后会被
         // organize_top_level 归位到「艺人\专辑」子目录,指纹路径已失配——
-        // 退一步按文件名在导入目录下重新定位(取尚无指纹的那个)
-        let idx = lib
-            .tracks
-            .iter()
-            .position(|t| t.path == abs_str || norm_path(&t.path) == abs_norm)
-            .or_else(|| {
-                let name = path.file_name()?.to_string_lossy().to_string();
-                lib.tracks.iter().position(|t| {
-                    t.sha256.is_none()
-                        && is_under(&t.path, &import_str)
-                        && Path::new(&t.path)
-                            .file_name()
-                            .is_some_and(|n| n.to_string_lossy() == name)
-                })
-            });
+        // 退一步按文件名在导入目录下重新定位(取登记顺序里尚无指纹的那个,
+        // 本轮已写入指纹的要从候选里跳过)
+        let idx = by_norm.get(&abs_norm).copied().or_else(|| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            by_name
+                .get(&name)?
+                .iter()
+                .copied()
+                .find(|&i| lib.tracks[i].sha256.is_none())
+        });
         if let Some(i) = idx {
             lib.tracks[i].sha256 = Some(sha);
         }
     }
-    lib.save(&state.data_dir.join(LIBRARY_FILE))
-        .map_err(|e| e.to_string())
+    // 锁内只序列化,磁盘 IO 在锁外
+    let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+    drop(lib);
+    Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes).map_err(|e| e.to_string())
 }
 
 fn record_pack_shas(
@@ -4042,15 +3957,20 @@ fn import_playlist_tmcl_blocking(
 
     let imported = entries.len() as u32;
     let final_name = {
+        // 闸只罩建歌单+落盘这一段:前面已调过 run_scan(它自己拿闸),
+        // 若整函数持闸,内部的 run_scan try_lock 必然失败
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         let name = unique_playlist_name(&lib.playlists, &list_name);
         lib.playlists.push(model::Playlist {
             id: new_playlist_id(&name),
             name: name.clone(),
-            created_at: now_secs(),
+            created_at: now_secs_f64(),
             entries,
         });
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
         name
     };
@@ -4286,7 +4206,7 @@ async fn stats_add(
     force: Option<bool>,
 ) -> Result<(), String> {
     let path = state.data_dir.join(stats::STATS_FILE);
-    let (snapshot, due) = {
+    let snapshot = {
         let mut s = state.stats.lock().map_err(|_| "统计锁中毒")?;
         s.merge(
             &samples,
@@ -4299,11 +4219,12 @@ async fn stats_add(
         let now = stats::now_secs();
         let due = force.unwrap_or(false)
             || now.saturating_sub(STATS_LAST_SAVE.load(Ordering::Relaxed)) >= 120;
-        (s.clone(), due)
+        // 先判 due 再决定是否克隆:节流未到期时整份历史统计的深克隆是纯浪费
+        due.then(|| s.clone())
     };
-    if !due {
+    let Some(snapshot) = snapshot else {
         return Ok(());
-    }
+    };
     tauri::async_runtime::spawn_blocking(move || snapshot.save(&path))
         .await
         .map_err(|e| e.to_string())?
@@ -4364,14 +4285,22 @@ fn smtc_set_position(app: tauri::AppHandle, position: f64, duration: f64) -> Res
 }
 
 #[tauri::command]
-fn get_library(state: State<AppState>) -> Result<InvokeResponseBody, String> {
+async fn get_library(app: tauri::AppHandle) -> Result<InvokeResponseBody, String> {
     // 锁内直接序列化成 JSON 字符串原样透传(InvokeResponseBody::Json),
     // 不再先建整棵 serde_json::Value 树:大曲库时启动/重扫的瞬时内存峰值显著更低;
-    // Json 变体以 application/json 返回,前端 invoke<Library> 拿到的仍是解析好的对象
-    let lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
-    serde_json::to_string(&*lib)
-        .map(InvokeResponseBody::Json)
-        .map_err(|e| e.to_string())
+    // Json 变体以 application/json 返回,前端 invoke<Library> 拿到的仍是解析好的对象。
+    // 整库序列化是毫秒级纯 CPU 活,但同步命令跑主线程照样卡 UI 帧 ——
+    // 挪进阻塞线程执行(与 scan_library 的收尾同构);命令名与入参不变,前端透明。
+    // 持 State 引用进不了 spawn_blocking('static),改经 AppHandle 在闭包内取状态
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
+        serde_json::to_string(&*lib)
+            .map(InvokeResponseBody::Json)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -4382,6 +4311,8 @@ async fn add_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
             return Err("该路径不是一个文件夹".into());
         }
         let state = app.state::<AppState>();
+        // 写库一律互斥扫描:扫描期间曲目被借走,照常落盘会持久化空曲库
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         if lib.folders.iter().any(|f| f == &path) {
             return Ok(());
@@ -4395,9 +4326,14 @@ async fn add_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
         {
             return Err(format!("该文件夹与已登记的「{f}」重叠,无需重复添加"));
         }
-        lib.folders.push(path);
-        if let Err(e) = lib.save(&state.data_dir.join(LIBRARY_FILE)) {
-            lib.folders.pop();
+        lib.folders.push(path.clone());
+        // 锁内只序列化,磁盘 IO 在锁外;失败重拿锁回滚
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        if let Err(e) = Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes) {
+            if let Ok(mut lib) = state.lib.lock() {
+                lib.folders.retain(|f| *f != path);
+            }
             return Err(e.to_string());
         }
         // 新登记的文件夹要同步进 asset 协议放行名单,否则封面/音频加载不出来
@@ -4412,11 +4348,14 @@ async fn add_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
 async fn remove_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = lock_scan_gate(&state);
         let mut lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
         lib.folders.retain(|f| f != &path);
         // 组件级前缀匹配:字符串 starts_with 会把 F:\music2 误当成 F:\music 的子目录
         lib.tracks.retain(|t| !is_under(&t.path, &path));
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
             .map_err(|e| e.to_string())?;
         Ok(())
     })
@@ -4534,6 +4473,37 @@ fn get_resource_usage() -> ResourceUsage {
     ResourceUsage { memory_mb, cpu }
 }
 
+/// 兜底清理异常退出残留在系统 Temp 的应用临时目录:
+/// taurimusic-stage-*(导出暂存)与 taurimusic-dl-*(在线下载暂存)。
+/// 正常流程各自会清理(前端 cleanup_stage / 下载命令收尾),这里只兜崩溃/断电
+fn cleanup_stale_temp_dirs() {
+    for entry in fs::read_dir(std::env::temp_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let p = entry.path();
+        let ours = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("taurimusic-stage-") || n.starts_with("taurimusic-dl-"));
+        if ours {
+            let _ = fs::remove_dir_all(&p);
+        }
+    }
+}
+
+/// 从 panic payload 里尽量还原消息:Box<dyn Any> 不实现 Display,
+/// 直接 format 只会得到类型名,排障时没有信息量
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&'static str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+        .unwrap_or("未知 panic")
+        .to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 启动守卫：已有实例运行时询问是否重启（旧实例卡死时的兜底）；
@@ -4573,22 +4543,9 @@ pub fn run() {
             std::fs::create_dir_all(cache_dir.join("covers")).ok();
             // 清理上次预览遗留的暂存目录:确认/取消时都会清理,这里兜底异常退出残留
             let _ = fs::remove_dir_all(cache_dir.join("covers").join("preview"));
-            // 兜底清理异常退出残留的导出暂存目录:正常流程由前端 cleanup_stage 处理,
-            // 崩溃/断电时整包音频会永久留在系统 Temp(可能几百 MB × 多个)
-            for entry in fs::read_dir(std::env::temp_dir())
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                let p = entry.path();
-                let ours = p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("taurimusic-stage-"));
-                if ours {
-                    let _ = fs::remove_dir_all(&p);
-                }
-            }
+            // 兜底清理异常退出残留的导出/下载暂存目录:崩溃/断电时整包音频
+            // 会永久留在系统 Temp(可能几百 MB × 多个)
+            cleanup_stale_temp_dirs();
             let lib = Library::load(&data_dir.join(LIBRARY_FILE));
             let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
@@ -4700,11 +4657,134 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        artist_matches, copy_into_import_dir, is_under, media_ext_from_url, name_matches,
-        place_archive, same_file_content, sanitize_name, sha256_hex, CopyResult,
+        copy_into_import_dir, is_under, media_ext_from_url, place_archive, same_file_content,
+        sanitize_name, sha256_hex, CopyResult,
     };
     use crate::model;
     use std::fs;
+
+    /// 构造一个不依赖 Tauri AppHandle 的最小 AppState(指向临时目录)
+    fn test_app_state(tag: &str) -> super::AppState {
+        let dir = std::env::temp_dir().join(format!("tm-appstate-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        super::AppState {
+            lib: std::sync::Mutex::new(model::Library::default()),
+            data_dir: dir.clone(),
+            cache_dir: dir.join("cache"),
+            scan_gate: std::sync::Mutex::new(()),
+            stats: std::sync::Mutex::new(crate::stats::StatsData::empty()),
+            pending_imports: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payloads() {
+        use super::panic_message;
+        use std::any::Any;
+        // panic!("字面量") 的 payload 是 &'static str,panic!("{}", x) 是 String,
+        // 其余类型拿不到文本——统一回退到"未知 panic"
+        let s: Box<dyn Any + Send> = Box::new("静态文本");
+        let t: Box<dyn Any + Send> = Box::new(String::from("动态文本"));
+        let n: Box<dyn Any + Send> = Box::new(42u32);
+        assert_eq!(panic_message(&*s), "静态文本");
+        assert_eq!(panic_message(&*t), "动态文本");
+        assert_eq!(panic_message(&*n), "未知 panic");
+    }
+
+    #[test]
+    fn scan_gate_lock_recovers_from_poisoning() {
+        use super::lock_scan_gate;
+        // 上次持闸方 panic 会毒化闸:阻塞入口必须 into_inner 硬恢复,
+        // 否则之后所有写库命令永久失败
+        let state = test_app_state("poison");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = lock_scan_gate(&state);
+            panic!("模拟持闸方崩溃");
+        }));
+        let _g = lock_scan_gate(&state); // 不应死锁/恐慌
+    }
+
+    #[test]
+    fn cleanup_stale_temp_dirs_removes_only_ours() {
+        use super::cleanup_stale_temp_dirs;
+        // 进程号保证唯一,避免误删其他进程的临时目录
+        let tag = format!("{}", std::process::id());
+        let stage = std::env::temp_dir().join(format!("taurimusic-stage-{tag}-test"));
+        let dl = std::env::temp_dir().join(format!("taurimusic-dl-{tag}-test"));
+        let foreign = std::env::temp_dir().join(format!("tm-foreign-{tag}"));
+        for d in [&stage, &dl, &foreign] {
+            let _ = fs::create_dir_all(d);
+        }
+        cleanup_stale_temp_dirs();
+        assert!(!stage.exists(), "stage- 前缀残留应被清理");
+        assert!(!dl.exists(), "dl- 前缀残留(在线下载暂存)同样应被清理");
+        assert!(foreign.exists(), "非应用前缀的目录不能动");
+        let _ = fs::remove_dir_all(&foreign);
+    }
+
+    #[test]
+    fn record_track_shas_matches_normalized_path_and_falls_back_by_name() {
+        use super::{record_track_shas, IMPORT_DIR_NAME};
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        let dir = std::env::temp_dir().join(format!("tm-shas-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let import_root = dir.join(IMPORT_DIR_NAME);
+        let moved = import_root.join("艺人").join("专辑").join("song.mp3");
+        let state = super::AppState {
+            lib: Mutex::new(model::Library {
+                tracks: vec![
+                    // 大小写/分隔符变体:规范化路径索引必须命中
+                    model::Track {
+                        id: "t1".into(),
+                        title: "T1".into(),
+                        path: r"F:\Music\Song.MP3".into(),
+                        ..Default::default()
+                    },
+                    // 散装导入后已被归位到「艺人\专辑」子目录,记录时路径已失配
+                    model::Track {
+                        id: "t2".into(),
+                        title: "T2".into(),
+                        path: moved.to_string_lossy().to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            data_dir: dir.clone(),
+            cache_dir: dir.join("cache"),
+            scan_gate: Mutex::new(()),
+            stats: Mutex::new(crate::stats::StatsData::empty()),
+            pending_imports: Mutex::new(Vec::new()),
+        };
+        let pairs = vec![
+            // 记录时路径与曲库只差大小写/分隔符
+            (PathBuf::from("f:/music/song.mp3"), "AAA".to_string()),
+            // 归位前的原始路径(顶层),只能按文件名在导入目录下兜底
+            (import_root.join("song.mp3"), "BBB".to_string()),
+        ];
+
+        record_track_shas(&state, &pairs).unwrap();
+
+        let lib = state.lib.lock().unwrap();
+        assert_eq!(
+            lib.tracks[0].sha256.as_deref(),
+            Some("aaa"),
+            "规范化路径命中应写入小写指纹"
+        );
+        assert_eq!(
+            lib.tracks[1].sha256.as_deref(),
+            Some("bbb"),
+            "归位失配应按文件名兜底命中"
+        );
+        // 指纹随落库持久化
+        let back = model::Library::load(&dir.join(super::LIBRARY_FILE));
+        assert_eq!(back.tracks[0].sha256.as_deref(), Some("aaa"));
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn media_ext_from_url_follows_the_delivered_container() {
@@ -4835,32 +4915,6 @@ mod tests {
     }
 
     #[test]
-    fn kuwo_helpers_parse_pseudo_json_and_lrc() {
-        use super::{build_lrc_from_kuwo, html_unescape, kuwo_fix_json};
-
-        // 伪 JSON → 严格 JSON:定界引号转换,值内撇号保留
-        let raw = "{'ARTIST':'Don&apos;T STOP','DURATION':'324','abslist':[{'A':'x'},{'B':'y'}]}";
-        let fixed = kuwo_fix_json(raw);
-        let v: serde_json::Value = serde_json::from_str(&fixed).unwrap();
-        assert_eq!(v["abslist"][1]["B"], "y");
-        // HTML 实体解码
-        assert_eq!(html_unescape("Don&apos;T&nbsp;STOP"), "Don'T\u{a0}STOP");
-        assert_eq!(html_unescape("&#39;ok&#x26;"), "'ok&");
-        // lrclist → LRC 文本
-        let lines = vec![
-            serde_json::json!({"lineLyric": "今天我", "time": "19.34"}),
-            serde_json::json!({"lineLyric": "寒夜里看雪飘过", "time": "75"}),
-            serde_json::json!({"lineLyric": "", "time": "80"}),
-        ];
-        assert_eq!(
-            build_lrc_from_kuwo(&lines).as_deref(),
-            Some("[00:19.34]今天我\n[01:15.00]寒夜里看雪飘过\n[01:20.00]")
-        );
-        // 空列表 → None
-        assert_eq!(build_lrc_from_kuwo(&[]), None);
-    }
-
-    #[test]
     fn import_skips_transcodables_without_ffmpeg() {
         // 无 ffmpeg:非常规格式静默跳过,不产生任何文件;歌词与直放格式不受影响
         use super::{copy_into_import_dir, CopyResult};
@@ -4879,46 +4933,6 @@ mod tests {
         assert!(matches!(got, Ok(CopyResult::Copied)));
         assert!(imp.join("凉宫春日.lrc").exists());
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn strip_bracketed_removes_parenthetical_for_search() {
-        use super::{kuwo_keywords, strip_bracketed};
-        assert_eq!(
-            strip_bracketed("八千里路明月照（挥笔生花问桀骜）"),
-            "八千里路明月照"
-        );
-        assert_eq!(strip_bracketed("Song (Live)"), "Song");
-        assert_eq!(strip_bracketed("A【B】C"), "A C");
-        assert_eq!(strip_bracketed("普通标题"), "普通标题");
-        // 关键词组:完整标题在前,去括号的在后(与原标题相同则只有一条)
-        assert_eq!(
-            kuwo_keywords("八千里路明月照（挥笔生花问桀骜）", "泛国同学"),
-            vec![
-                "八千里路明月照（挥笔生花问桀骜） 泛国同学".to_string(),
-                "八千里路明月照 泛国同学".to_string(),
-            ]
-        );
-        assert_eq!(
-            kuwo_keywords("普通标题", "艺人"),
-            vec!["普通标题 艺人".to_string()]
-        );
-    }
-
-    #[test]
-    fn title_is_live_distinguishes_live_markers_from_lookalikes() {
-        use super::title_is_live;
-        // 常见现场版标记:英文括号后缀 / 中文标记 / 繁体
-        assert!(title_is_live("朋友们的酒 (Live in China)"));
-        assert!(title_is_live("Song (Live)"));
-        assert!(title_is_live("海阔天空（现场版）"));
-        assert!(title_is_live("海阔天空（現場）"));
-        assert!(title_is_live("演唱会 2023"));
-        assert!(title_is_live("Live版"));
-        // 误判防线:live 必须独立成词
-        assert!(!title_is_live("Alive"));
-        assert!(!title_is_live("Livin' on a Prayer"));
-        assert!(!title_is_live("普通标题"));
     }
 
     #[test]
@@ -5128,26 +5142,6 @@ mod tests {
         ));
         assert!(!imp.join("new_name.mp3").exists(), "重复内容不落盘");
         fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn name_matching_is_normalized() {
-        // 大小写
-        assert!(name_matches("Beyond", "BEYOND"));
-        // 繁简
-        assert!(name_matches("湯幻月", "汤幻月"));
-        // 空串不匹配
-        assert!(!name_matches("", "Beyond"));
-        // 无关艺人
-        assert!(!name_matches("Janet Jackson", "Beyond"));
-    }
-
-    #[test]
-    fn artist_group_matches_any_segment() {
-        // 多艺人组里任一命中即可,且繁体「湯」与简体「汤」互通
-        assert!(artist_matches("湯幻月/小义学长", "小义学长"));
-        assert!(artist_matches("湯幻月/小义学长", "汤幻月"));
-        assert!(!artist_matches("湯幻月/小义学长", "张治环"));
     }
 
     #[test]

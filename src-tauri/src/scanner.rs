@@ -7,8 +7,60 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::model::{ScanReport, Track};
+use crate::model::{Library, ScanReport, Track};
 use crate::{sanitize_name, AppState, IMPORT_DIR_NAME, LIBRARY_FILE};
+
+/// mem::take 拿走旧曲库后的早退兜底:扫描中途任何 return/panic 都必须把曲目
+/// 放回 AppState——曲目被借走期间 lib.tracks 是空的,不兜底就会让用户曲库凭空消失。
+/// 曲目在扫描期间被移进 by_path 索引(Mutex 保护,worker 可取走复用),
+/// guard 持有索引本体;正常合并时 into_map 消费掉,drop 只在异常路径触发恢复
+struct TracksGuard<'a> {
+    lib: &'a Mutex<Library>,
+    tracks: Option<Mutex<HashMap<String, Track>>>,
+}
+
+impl<'a> TracksGuard<'a> {
+    fn new(lib: &'a Mutex<Library>, tracks: Vec<Track>) -> Self {
+        // 只克隆路径字符串做键,整轨值原地移动进索引(旧实现在此深拷贝一份全库)
+        let map: HashMap<String, Track> = tracks.into_iter().map(|t| (t.path.clone(), t)).collect();
+        Self {
+            lib,
+            tracks: Some(Mutex::new(map)),
+        }
+    }
+
+    /// worker 共享访问:快速路径用 remove 取走旧记录所有权,免掉整轨 clone
+    fn shared(&self) -> &Mutex<HashMap<String, Track>> {
+        self.tracks.as_ref().expect("索引只消费一次")
+    }
+
+    /// 合并阶段:撤销早退兜底,拿回索引统计 removed
+    fn into_map(mut self) -> Mutex<HashMap<String, Track>> {
+        self.tracks.take().expect("索引只消费一次")
+    }
+}
+
+impl Drop for TracksGuard<'_> {
+    fn drop(&mut self) {
+        let Some(map) = self.tracks.take() else {
+            return; // 已被 into_map 正常消费,无需兜底
+        };
+        let map = map.into_inner().unwrap_or_else(|e| e.into_inner());
+        // 锁中毒也 into_inner 硬恢复:把曲目放回去比容忍毒化更重要
+        let mut lib = self.lib.lock().unwrap_or_else(|e| e.into_inner());
+        lib.tracks = map.into_values().collect();
+    }
+}
+
+/// 进度上报节流间隔:50ms ≈ 每秒最多 20 个 IPC 事件。
+/// 快速路径每秒能处理数千文件,逐文件 emit 会把 IPC 队列打满反而拖慢扫描;
+/// 按固定计数节流在快慢文件混扫时节奏不可控,时间窗对两种速率都稳定
+const PROGRESS_INTERVAL_MS: u64 = 50;
+
+/// 距上次上报是否已到节流间隔(独立成函数便于单测边界)
+fn progress_due(last_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) >= PROGRESS_INTERVAL_MS
+}
 
 pub const EXTENSIONS: &[&str] = &["mp3", "m4a", "flac", "ogg", "oga", "opus", "wav"];
 /// 需经 ffmpeg 转 FLAC 才能播放的扩展名:浏览器内核(WebView2)没有这些解码器,
@@ -50,16 +102,18 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
             return Err("已有扫描正在进行,请稍后再试".to_string())
         }
     };
-    // 旧曲库只在这里克隆成 path 索引:扫描全程不再持有第二份全量记录
-    let (folders, mut by_path, prev_version) = {
-        let lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
-        let by_path = lib
-            .tracks
-            .iter()
-            .map(|t| (t.path.clone(), t.clone()))
-            .collect::<HashMap<String, Track>>();
-        (lib.folders.clone(), by_path, lib.version)
+    // 旧曲库在这里被整体拿走一次:mem::take 换取所有权,by_path 直接消费这份值,
+    // 不再为索引深拷贝第二份全量记录。曲目被借走期间 lib.tracks 为空,
+    // 任何早退/panic 都必须放回 —— 由 TracksGuard 兜底
+    let (folders, taken, prev_version) = {
+        let mut lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
+        (
+            lib.folders.clone(),
+            std::mem::take(&mut lib.tracks),
+            lib.version,
+        )
     };
+    let guard = TracksGuard::new(&state.lib, taken);
     // 曲库格式版本不匹配时放弃全部增量复用,重新解析每个文件
     let force_full = prev_version != SCAN_VERSION;
 
@@ -114,183 +168,221 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
     // 目录旁路文件清单缓存:每个目录一次 read_dir,全部 worker 共享
     let dir_listings: Mutex<HashMap<PathBuf, DirListing>> = Mutex::new(HashMap::new());
     let done = std::sync::atomic::AtomicUsize::new(0);
+    // 进度节流的时钟基准与上次上报时刻(毫秒):worker 间共享,只经原子访问
+    let scan_start = std::time::Instant::now();
+    let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
 
-    let chunk_results: Vec<Vec<Track>> = std::thread::scope(|scope| {
-        let chunks = &chunks;
-        let next_chunk = &next_chunk;
-        let by_path = &by_path;
-        let done = &done;
-        let covers_dir = &covers_dir;
-        let app = &app;
-        let album_covers = &album_covers;
-        let dir_listings = &dir_listings;
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(move || {
-                    let mut out: Vec<Track> = Vec::new();
-                    // 快速复用与 metadata 失败的文件同样要上报进度:
-                    // 纯增量扫描里大多数文件走快速路径,只在解析后上报的话进度条全程不动
-                    let emit_progress = || {
-                        let n = done.load(std::sync::atomic::Ordering::Relaxed);
-                        let _ = app.emit("scan-progress", json!({ "current": n, "total": total }));
-                    };
-                    loop {
-                        let i = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(chunk) = chunks.get(i) else {
-                            break;
+    let chunk_results: Vec<(Vec<Track>, usize)> = {
+        // 借用 guard 里的索引:worker 内用短临界区 remove 取走旧记录
+        let by_path = guard.shared();
+        std::thread::scope(|scope| {
+            let chunks = &chunks;
+            let next_chunk = &next_chunk;
+            let by_path = &by_path;
+            let done = &done;
+            let covers_dir = &covers_dir;
+            let app = &app;
+            let album_covers = &album_covers;
+            let dir_listings = &dir_listings;
+            let scan_start = &scan_start;
+            let last_emit_ms = &last_emit_ms;
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let mut out: Vec<Track> = Vec::new();
+                        // 命中旧记录而入结果的曲目数:合并阶段据此区分 added/updated
+                        // (索引条目在扫描中被取走,不能再用 remove 是否命中来计数)
+                        let mut updated = 0usize;
+                        // 快速复用与 metadata 失败的文件同样要上报进度:
+                        // 纯增量扫描里大多数文件走快速路径,只在解析后上报的话进度条全程不动
+                        let emit_progress = || {
+                            // 时间节流 + CAS 抢占:并发 worker 只有一个真正发出事件,
+                            // 输掉 CAS 的放弃本次,下个文件再试;结束时有强制补发,不怕尾部丢失
+                            let elapsed = scan_start.elapsed().as_millis() as u64;
+                            let last = last_emit_ms.load(std::sync::atomic::Ordering::Relaxed);
+                            if progress_due(last, elapsed)
+                                && last_emit_ms
+                                    .compare_exchange(
+                                        last,
+                                        elapsed,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    )
+                                    .is_ok()
+                            {
+                                let n = done.load(std::sync::atomic::Ordering::Relaxed);
+                                let _ = app
+                                    .emit("scan-progress", json!({ "current": n, "total": total }));
+                            }
                         };
-                        for path in *chunk {
-                            let path_str = path.to_string_lossy().to_string();
-                            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                            let (mtime, size) = match fs::metadata(path) {
-                                Ok(m) => (
-                                    m.modified()
-                                        .ok()
-                                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                                        .map(|d| d.as_secs_f64())
-                                        .unwrap_or(0.0),
-                                    m.len(),
-                                ),
-                                Err(e) => {
-                                    // NotFound = 文件真的没了,落入 removed 口径;
-                                    // 其余(杀软独占/网络盘抖动)是瞬时失败,保留旧记录,
-                                    // 不能把还能读到的曲目误清出曲库
-                                    if e.kind() != std::io::ErrorKind::NotFound {
-                                        eprintln!(
-                                            "[scan] 读取文件信息失败 {path_str}: {e},保留旧记录"
-                                        );
-                                        if let Some(prev) = by_path.get(&path_str) {
-                                            out.push(prev.clone());
-                                        }
-                                    }
-                                    emit_progress();
-                                    continue;
-                                }
+                        loop {
+                            let i = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(chunk) = chunks.get(i) else {
+                                break;
                             };
+                            for path in *chunk {
+                                let path_str = path.to_string_lossy().to_string();
+                                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                            let cached = by_path.get(&path_str).cloned();
-                            if let Some(prev) = &cached {
-                                // 文件未变化:直接复用旧记录,不重复解析。
-                                // 旁路文件(cover.* / 同名 .lrc)比音频新时也算变更——在线匹配只新增旁路文件;
-                                // 旧记录里的封面/歌词文件已被删除时同样视为变更,避免残留失效路径
-                                let cover_ok = prev
-                                    .cover
-                                    .as_ref()
-                                    .map(|c| Path::new(c).is_file())
-                                    .unwrap_or(true)
-                                    && prev
-                                        .cover_large
+                                let (mtime, size) = match fs::metadata(path) {
+                                    Ok(m) => (
+                                        m.modified()
+                                            .ok()
+                                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                            .map(|d| d.as_secs_f64())
+                                            .unwrap_or(0.0),
+                                        m.len(),
+                                    ),
+                                    Err(e) => {
+                                        // NotFound = 文件真的没了,落入 removed 口径;
+                                        // 其余(杀软独占/网络盘抖动)是瞬时失败,保留旧记录,
+                                        // 不能把还能读到的曲目误清出曲库
+                                        if e.kind() != std::io::ErrorKind::NotFound {
+                                            eprintln!(
+                                                "[scan] 读取文件信息失败 {path_str}: {e},保留旧记录"
+                                            );
+                                            if let Some(prev) = by_path
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .remove(&path_str)
+                                            {
+                                                out.push(prev);
+                                                updated += 1;
+                                            }
+                                        }
+                                        emit_progress();
+                                        continue;
+                                    }
+                                };
+
+                                // 快速复用:一次 remove 取走旧记录所有权,命中就免整轨 clone
+                                // 直接入结果;未命中(需重解析)时旧记录留在本地变量里,
+                                // 供 added_at/SHA 继承与解析失败回填。路径已在清单阶段去重,
+                                // 同一 key 永远只被一个 worker 触碰,remove 不会扑空
+                                let cached = by_path
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .remove(&path_str);
+                                let mut unchanged = false;
+                                if let Some(prev) = &cached {
+                                    // 文件未变化:直接复用旧记录,不重复解析。
+                                    // 旁路文件(cover.* / 同名 .lrc)比音频新时也算变更——在线匹配只新增旁路文件;
+                                    // 旧记录里的封面/歌词文件已被删除时同样视为变更,避免残留失效路径
+                                    let cover_ok = prev
+                                        .cover
+                                        .as_ref()
+                                        .map(|c| Path::new(c).is_file())
+                                        .unwrap_or(true)
+                                        && prev
+                                            .cover_large
+                                            .as_ref()
+                                            .map(|c| Path::new(c).is_file())
+                                            .unwrap_or(true);
+                                    let lrc_ok = prev
+                                        .lrc_path
                                         .as_ref()
                                         .map(|c| Path::new(c).is_file())
                                         .unwrap_or(true);
-                                let lrc_ok = prev
-                                    .lrc_path
-                                    .as_ref()
-                                    .map(|c| Path::new(c).is_file())
-                                    .unwrap_or(true);
-                                // prev.cover 指向的是缓存缩略图,与曲目元数据无关:
-                                // 缩略图 mtime(上次扫描时刻)天然晚于音频 mtime,
-                                // 计入旁路判定会让带封面的曲目每轮都全量重解析,
-                                // 增量扫描整体失效;缓存丢失已由上面的 cover_ok 覆盖
-                                if (prev.mtime - mtime).abs() < 0.5
-                                    && prev.size == size
-                                    && cover_ok
-                                    && lrc_ok
-                                    && {
-                                        let mut listings =
-                                            dir_listings.lock().unwrap_or_else(|e| e.into_inner());
-                                        sidecar_mtime(path, &mut listings)
-                                    } <= prev.mtime + 0.5
-                                    && !force_full
-                                {
-                                    out.push(prev.clone());
+                                    // prev.cover 指向的是缓存缩略图,与曲目元数据无关:
+                                    // 缩略图 mtime(上次扫描时刻)天然晚于音频 mtime,
+                                    // 计入旁路判定会让带封面的曲目每轮都全量重解析,
+                                    // 增量扫描整体失效;缓存丢失已由上面的 cover_ok 覆盖
+                                    unchanged = (prev.mtime - mtime).abs() < 0.5
+                                        && prev.size == size
+                                        && cover_ok
+                                        && lrc_ok
+                                        && {
+                                            let mut listings = dir_listings
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner());
+                                            sidecar_mtime(path, &mut listings)
+                                        } <= prev.mtime + 0.5
+                                        && !force_full;
+                                }
+                                if unchanged {
+                                    out.push(cached.expect("unchanged 为真时旧记录必然存在"));
+                                    updated += 1;
                                     emit_progress();
                                     continue;
                                 }
-                            }
 
-                            match parse_track(
-                                path,
-                                mtime,
-                                size,
-                                now,
-                                covers_dir,
-                                &mut album_covers.lock().unwrap_or_else(|e| e.into_inner()),
-                            ) {
-                                Ok(mut track) => {
-                                    if let Some(prev) = &cached {
-                                        track.added_at = prev.added_at;
-                                        // 内容未变(mtime/size 都没动)的重解析——旁路文件
-                                        // 更新或强制全扫触发:保留旧 SHA 指纹,
-                                        // 否则跨包内容去重在下一轮扫描后失效
-                                        if (prev.mtime - mtime).abs() < 0.5 && prev.size == size {
-                                            track.sha256 = prev.sha256.clone();
+                                match parse_track(path, mtime, size, now, covers_dir, album_covers)
+                                {
+                                    Ok(mut track) => {
+                                        if let Some(prev) = &cached {
+                                            track.added_at = prev.added_at;
+                                            // 内容未变(mtime/size 都没动)的重解析——旁路文件
+                                            // 更新或强制全扫触发:保留旧 SHA 指纹,
+                                            // 否则跨包内容去重在下一轮扫描后失效
+                                            if (prev.mtime - mtime).abs() < 0.5 && prev.size == size
+                                            {
+                                                track.sha256 = prev.sha256.clone();
+                                            }
+                                            updated += 1;
+                                        }
+                                        out.push(track);
+                                    }
+                                    Err(err) => {
+                                        eprintln!("[scan] 解析失败 {path_str}: {err}");
+                                        if let Some(prev) = cached {
+                                            out.push(prev);
+                                            updated += 1;
                                         }
                                     }
-                                    out.push(track);
                                 }
-                                Err(err) => {
-                                    eprintln!("[scan] 解析失败 {path_str}: {err}");
-                                    if let Some(prev) = cached {
-                                        out.push(prev);
-                                    }
-                                }
+                                emit_progress();
                             }
-                            emit_progress();
                         }
-                    }
-                    out
+                        (out, updated)
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| match h.join() {
-                Ok(v) => v,
-                // worker panic 不能静默吞掉:unwrap_or_default 会把这批曲目按
-                // removed 口径静默清出曲库——续传 panic 让故障当场暴露
-                Err(e) => std::panic::resume_unwind(e),
-            })
-            .collect()
-    });
-
-    // 按原顺序合并 + 聚合统计:added/updated 由 by_path 判定;
-    // metadata 失败的文件落入 removed 口径,解析失败的保留旧记录
-    let mut result: Vec<Track> = Vec::with_capacity(total);
-    for chunk in chunk_results {
-        result.extend(chunk);
-    }
-    // 本次扫到的路径从索引里移除:剩下的就是被移除的曲目,
-    // 省掉一份全量 seen 集合与对旧曲库的二次遍历
-    let mut added = 0usize;
-    let mut updated = 0usize;
-    for t in &result {
-        if by_path.remove(&t.path).is_some() {
-            updated += 1;
-        } else {
-            added += 1;
-        }
-    }
-    let removed = by_path.len();
-    let report = ScanReport {
-        added,
-        updated,
-        removed,
-        total,
-        errors: 0, // 解析失败已回填旧记录;metadata 失败计入 removed
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(v) => v,
+                    // worker panic 不能静默吞掉:unwrap_or_default 会把这批曲目按
+                    // removed 口径静默清出曲库——续传 panic 让故障当场暴露
+                    Err(e) => std::panic::resume_unwind(e),
+                })
+                .collect()
+        })
     };
 
-    // 引用集包含回收站快照,还原后封面文件仍在
-    let referenced: HashSet<String> = {
+    // 节流会吞掉尾部事件:强制补发一次满格进度,进度条必须明确收尾
+    let _ = app.emit(
+        "scan-progress",
+        json!({ "current": done.load(std::sync::atomic::Ordering::Relaxed), "total": total }),
+    );
+
+    // 按原顺序合并 + 聚合统计:updated 由扫描期计数(入结果时命中过旧记录),
+    // metadata 失败的文件落入 removed 口径,解析失败的保留旧记录
+    let mut result: Vec<Track> = Vec::with_capacity(total);
+    let mut updated = 0usize;
+    for (chunk, chunk_updated) in chunk_results {
+        updated += chunk_updated;
+        result.extend(chunk);
+    }
+    let added = result.len() - updated;
+
+    let (report, referenced) = {
         let mut lib = state.lib.lock().map_err(|_| "曲库状态不可用".to_string())?;
+        // 拿到曲库锁才撤销早退兜底:此前任何失败出口都由 guard 把借走的曲目放回
+        let by_path = guard
+            .into_map()
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+        // 索引条目在扫描中被逐个取走,剩下的就是没被本次扫描看到的曲目(removed)
+        let removed = by_path.len();
         lib.tracks = result;
         lib.version = SCAN_VERSION;
+        // 锁内只序列化;磁盘 IO(含 fsync 与两次 rename)移到锁外。
         // 落盘失败必须上抛:release 构建没有控制台,eprintln 无处可见,
         // 静默失败会让内存态与磁盘态分叉
-        lib.save(&state.data_dir.join(LIBRARY_FILE))
-            .map_err(|e| e.to_string())?;
-        lib.tracks
+        let bytes = lib.to_bytes().map_err(|e| e.to_string())?;
+        // 引用集包含回收站快照,还原后封面文件仍在
+        let covers: HashSet<String> = lib
+            .tracks
             .iter()
             .chain(lib.trash.iter().map(|e| &e.track))
             .filter_map(|t| t.cover.clone())
@@ -300,7 +392,18 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
                     .chain(lib.trash.iter().map(|e| &e.track))
                     .filter_map(|t| t.cover_large.clone()),
             )
-            .collect()
+            .collect();
+        drop(lib);
+        Library::write_bytes(&state.data_dir.join(LIBRARY_FILE), &bytes)
+            .map_err(|e| e.to_string())?;
+        let report = ScanReport {
+            added,
+            updated,
+            removed,
+            total,
+            errors: 0, // 解析失败已回填旧记录;metadata 失败计入 removed
+        };
+        (report, covers)
     };
     // 封面缓存 GC:清理已删/已移走音乐残留的孤儿缩略图;文件 IO 在锁外做
     gc_cover_cache(&covers_dir, &referenced);
@@ -354,7 +457,7 @@ fn parse_track(
     size: u64,
     added_at: f64,
     covers_dir: &Path,
-    album_covers: &mut HashMap<String, CoverPair>,
+    album_covers: &Mutex<HashMap<String, CoverPair>>,
 ) -> Result<Track, String> {
     use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::picture::MimeType;
@@ -447,8 +550,15 @@ fn parse_track(
         album,
         parent.to_string_lossy()
     );
-    let (cover, cover_large) = if let Some(c) = album_covers.get(&album_key) {
-        c.clone()
+    // 短临界区:只在查表/写表两处拿锁。lofty 探测、封面解码与 JPEG 编码都在锁外
+    // 进行,否则多 worker 并行解析会被这张表整体串行化
+    let cached = album_covers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&album_key)
+        .cloned();
+    let (cover, cover_large) = if let Some(c) = cached {
+        c
     } else {
         // 来源优先级:内嵌 → {stem}.cover.* → cover.*;统一读出字节进缓存
         let mut source: Option<(Vec<u8>, &'static str)> = None;
@@ -496,7 +606,13 @@ fn parse_track(
         } else {
             (Some(cover), Some(cover_large))
         };
-        album_covers.insert(album_key, result.clone());
+        // get-miss 与 insert 之间不持锁:另一 worker 可能对同一专辑重复编码一次封面。
+        // 两边写的是同一目标文件名、同一份源字节,last-wins 无害,只多花一次编码;
+        // 换来探测/编码全程并行
+        album_covers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(album_key, result.clone());
         result
     };
 
@@ -542,10 +658,14 @@ fn write_cover_thumbs(covers_dir: &Path, album_key: &str, data: &[u8]) -> Option
 
     let img = image::load_from_memory(data).ok()?;
     let write = |max_dim: u32, name: String| -> Option<String> {
+        // 只在超限时重采样;未超限直接引用原图编码,省一次整图像素拷贝
+        // (512² RGB 已是约 0.75MB,clone 纯属浪费)
+        let scaled;
         let thumb = if img.width().max(img.height()) > max_dim {
-            img.resize(max_dim, max_dim, FilterType::Triangle)
+            scaled = img.resize(max_dim, max_dim, FilterType::Triangle);
+            &scaled
         } else {
-            img.clone()
+            &img
         };
         let rgb = thumb.to_rgb8();
         let file = covers_dir.join(name);
@@ -879,13 +999,26 @@ mod tests {
         fs::write(path, v).unwrap();
     }
 
+    /// 生成一张纯色 PNG(可解码,颜色用于像素级断言)
+    fn tiny_png(rgb: [u8; 3]) -> Vec<u8> {
+        use image::ImageFormat;
+        let mut img = image::DynamicImage::new_rgb8(64, 64);
+        img.as_mut_rgb8()
+            .unwrap()
+            .pixels_mut()
+            .for_each(|p| *p = image::Rgb(rgb));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
     #[test]
     fn parse_track_falls_back_to_filename() {
         let dir = temp_dir("fallback");
         // "艺人 - 标题" 命名约定
         let audio = dir.join("周杰伦 - 晴天.wav");
         write_wav(&audio);
-        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &mut HashMap::new()).unwrap();
+        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &Mutex::new(HashMap::new())).unwrap();
         assert_eq!(t.title, "晴天");
         assert_eq!(t.artist, "周杰伦");
         assert_eq!(t.album, "未知专辑");
@@ -895,28 +1028,83 @@ mod tests {
     }
 
     #[test]
+    fn parse_track_cover_cache_is_parallel_safe() {
+        // 两个 worker 并发解析同专辑(同目录)曲目:缓存只落一条,两边都拿到封面;
+        // get-miss 与 insert 之间的重复编码写同一目标文件名,last-wins 无害
+        let dir = temp_dir("covercache");
+        write_wav(&dir.join("a.wav"));
+        write_wav(&dir.join("b.wav"));
+        fs::write(dir.join("cover.jpg"), tiny_png([0, 0, 255])).unwrap();
+        let covers = Mutex::new(HashMap::new());
+        let tracks: Vec<Track> = std::thread::scope(|scope| {
+            let dir = &dir;
+            let covers = &covers;
+            let handles: Vec<_> = ["a.wav", "b.wav"]
+                .into_iter()
+                .map(|name| {
+                    scope.spawn(move || {
+                        parse_track(&dir.join(name), 0.0, 1, 0.0, dir, covers).unwrap()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            tracks.iter().all(|t| t.cover.is_some()),
+            "并发解析都应拿到封面"
+        );
+        assert_eq!(covers.lock().unwrap().len(), 1, "同专辑只缓存一条");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tracks_guard_restores_checked_out_library() {
+        // 早退兜底:mem::take 借走曲目后无论从哪条路径放弃扫描,曲库都不能是空的
+        let lib = Mutex::new(Library {
+            tracks: vec![
+                Track {
+                    path: "F:\\a.mp3".into(),
+                    ..Default::default()
+                },
+                Track {
+                    path: "F:\\b.mp3".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let taken = {
+            let mut l = lib.lock().unwrap();
+            std::mem::take(&mut l.tracks)
+        };
+        {
+            let guard = TracksGuard::new(&lib, taken);
+            // 模拟 worker 消费索引
+            assert_eq!(guard.shared().lock().unwrap().len(), 2);
+            // guard 在此 drop,应触发恢复
+        }
+        assert_eq!(lib.lock().unwrap().tracks.len(), 2, "drop 必须把曲目放回");
+    }
+
+    #[test]
+    fn progress_due_throttles_by_interval() {
+        assert!(!progress_due(0, 49), "间隔未到不上报");
+        assert!(progress_due(0, 50), "到 50ms 立即放行");
+        assert!(progress_due(30, 80), "距上次上报超间隔放行");
+    }
+
+    #[test]
     fn parse_track_cover_priority_stem_before_dir() {
-        use image::ImageFormat;
         let dir = temp_dir("coverprio");
         let audio = dir.join("s.wav");
         write_wav(&audio);
 
         // 生成两张可解码且颜色不同的 PNG,通过像素颜色验证优先级
-        let png = |rgb: [u8; 3]| -> Vec<u8> {
-            let mut img = image::DynamicImage::new_rgb8(64, 64);
-            img.as_mut_rgb8()
-                .unwrap()
-                .pixels_mut()
-                .for_each(|p| *p = image::Rgb(rgb));
-            let mut buf = std::io::Cursor::new(Vec::new());
-            img.write_to(&mut buf, ImageFormat::Png).unwrap();
-            buf.into_inner()
-        };
-        fs::write(dir.join("s.cover.jpg"), png([255, 0, 0])).unwrap();
-        fs::write(dir.join("cover.jpg"), png([0, 0, 255])).unwrap();
+        fs::write(dir.join("s.cover.jpg"), tiny_png([255, 0, 0])).unwrap();
+        fs::write(dir.join("cover.jpg"), tiny_png([0, 0, 255])).unwrap();
 
         // 曲目专属旁路封面优先于目录封面(封面统一进缓存,按像素颜色判别来源)
-        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &mut HashMap::new()).unwrap();
+        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &Mutex::new(HashMap::new())).unwrap();
         let c = t.cover.expect("stem cover");
         let pixel = image::open(&c).unwrap().to_rgb8().get_pixel(0, 0).0;
         // JPEG 有损,通道值允许 ±8 误差;红胜蓝即专属封面胜出
@@ -927,7 +1115,7 @@ mod tests {
 
         // 删除专属封面后回退目录封面
         fs::remove_file(dir.join("s.cover.jpg")).unwrap();
-        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &mut HashMap::new()).unwrap();
+        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &Mutex::new(HashMap::new())).unwrap();
         let c = t.cover.expect("dir cover");
         let pixel = image::open(&c).unwrap().to_rgb8().get_pixel(0, 0).0;
         assert!(
@@ -937,7 +1125,7 @@ mod tests {
 
         // 全部移除后无封面
         fs::remove_file(dir.join("cover.jpg")).unwrap();
-        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &mut HashMap::new()).unwrap();
+        let t = parse_track(&audio, 0.0, 1, 0.0, &dir, &Mutex::new(HashMap::new())).unwrap();
         assert!(t.cover.is_none() && t.cover_large.is_none());
         fs::remove_dir_all(&dir).ok();
     }
@@ -958,6 +1146,17 @@ mod tests {
         let l_decoded = image::open(&large).unwrap();
         assert!(l_decoded.width().max(l_decoded.height()) <= 512);
         assert!(l_decoded.width().max(l_decoded.height()) > 256); // 800x600 只压到大图档
+
+        // 原图小于两档上限:直接引用原图编码(不做重采样),尺寸原样保留
+        let mini = image::DynamicImage::new_rgb8(100, 60);
+        let mut mini_png = std::io::Cursor::new(Vec::new());
+        mini.write_to(&mut mini_png, ImageFormat::Png).unwrap();
+        let (small, large) =
+            write_cover_thumbs(&dir, "album\u{1}small", mini_png.get_ref()).unwrap();
+        let s_decoded = image::open(&small).unwrap();
+        assert_eq!((s_decoded.width(), s_decoded.height()), (100, 60));
+        let l_decoded = image::open(&large).unwrap();
+        assert_eq!((l_decoded.width(), l_decoded.height()), (100, 60));
 
         // 非图片数据返回 None,调用方回退原样写入
         assert!(write_cover_thumbs(&dir, "album\u{1}y", b"not-an-image").is_none());

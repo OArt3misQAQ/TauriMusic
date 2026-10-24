@@ -129,21 +129,73 @@ fn restrict_cover_url(source: &str, raw: &str) -> Result<String, String> {
     restrict_url(raw, |host| cover_host_allowed(source, host))
 }
 
+// ===== HTTP 客户端统一构造 =====
+
+/// 模拟 Chrome 浏览器 UA:部分平台接口对非浏览器 UA 拒答或返回降级结果
+pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+/// 公开曲库接口(LRCLIB / iTunes)的礼貌标识 UA:无反爬门槛,如实亮明应用身份
+pub(crate) const APP_UA: &str = concat!(
+    "TauriMusic/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/OArt3misQAQ/TauriMusic)"
+);
+
+/// 各在线客户端的差异项:超时 / UA / 默认头 / 重定向策略。
+/// 差异集中声明,构造收敛在 build_http_client,防止 UA 与超时配置在
+/// 多个调用点各自复制后悄悄漂移
+pub(crate) struct HttpClientSpec {
+    /// 整请求超时(连接+读体);下载整首歌单独用 300s 长档
+    pub(crate) timeout: std::time::Duration,
+    pub(crate) ua: &'static str,
+    pub(crate) referer: Option<&'static str>,
+    pub(crate) cookie: Option<&'static str>,
+    /// false = 禁止跟随 30x:封面/直链抓取不能被 30x 带去白名单外或内网地址
+    pub(crate) follow_redirects: bool,
+}
+
+/// 在线 HTTP 客户端统一构造器。
+/// builder 失败只可能源于 TLS 后端初始化异常,此时 Client::new() 同样会 panic
+/// 却还丢了超时配置(静默挂死 spawn_blocking 线程),不如首次调用时显式失败
+pub(crate) fn build_http_client(spec: HttpClientSpec) -> reqwest::blocking::Client {
+    let mut builder = reqwest::blocking::Client::builder()
+        .user_agent(spec.ua)
+        .timeout(spec.timeout);
+    if !spec.follow_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(r) = spec.referer {
+        headers.insert(
+            reqwest::header::REFERER,
+            r.parse().expect("预设 Referer 常量必然可解析"),
+        );
+    }
+    if let Some(c) = spec.cookie {
+        headers.insert(
+            reqwest::header::COOKIE,
+            c.parse().expect("预设 Cookie 常量必然可解析"),
+        );
+    }
+    if !headers.is_empty() {
+        builder = builder.default_headers(headers);
+    }
+    builder
+        .build()
+        .expect("在线 HTTP 客户端构造失败(TLS 后端初始化异常)")
+}
+
 fn qq_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .default_headers(reqwest::header::HeaderMap::from_iter([(
-                    reqwest::header::REFERER,
-                    "https://y.qq.com/".parse().unwrap(),
-                )]))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            build_http_client(HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: BROWSER_UA,
+                referer: Some("https://y.qq.com/"),
+                cookie: None,
+                follow_redirects: true,
+            })
         })
         .clone()
 }
@@ -152,17 +204,13 @@ fn kugou_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .default_headers(reqwest::header::HeaderMap::from_iter([(
-                    reqwest::header::REFERER,
-                    "https://www.kugou.com/".parse().unwrap(),
-                )]))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            build_http_client(HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: BROWSER_UA,
+                referer: Some("https://www.kugou.com/"),
+                cookie: None,
+                follow_redirects: true,
+            })
         })
         .clone()
 }
@@ -171,19 +219,245 @@ fn kuwo_client() -> reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                )
-                .default_headers(reqwest::header::HeaderMap::from_iter([(
-                    reqwest::header::REFERER,
-                    "https://www.kuwo.cn/".parse().unwrap(),
-                )]))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            build_http_client(HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: BROWSER_UA,
+                referer: Some("https://www.kuwo.cn/"),
+                cookie: None,
+                follow_redirects: true,
+            })
         })
         .clone()
+}
+
+/// 网易云接口客户端:须带 os=pc Cookie,否则部分接口按移动网页端降级返回
+/// (lib.rs 根重导出,examples/make_tmc 的在线匹配调试入口也用它)
+pub fn netease_client() -> reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            build_http_client(HttpClientSpec {
+                timeout: std::time::Duration::from_secs(15),
+                ua: BROWSER_UA,
+                referer: Some("https://music.163.com"),
+                cookie: Some("os=pc; appver=2.9.7"),
+                follow_redirects: true,
+            })
+        })
+        .clone()
+}
+
+// ===== 传输层错误与状态码统一文案 =====
+
+/// 传输层错误统一转译:reqwest 原始错误串(带 URL/IO 细节)对用户不可操作,
+/// 超时单列,让用户能区分「网络不通」与「对端过慢」
+pub(crate) fn net_err(label: &str, e: &reqwest::Error) -> String {
+    net_err_text(label, e.is_timeout())
+}
+
+/// 超时与断连的文案映射(拆出纯函数便于单测)
+fn net_err_text(label: &str, timeout: bool) -> String {
+    if timeout {
+        format!("{label}: 请求超时,请检查网络后重试")
+    } else {
+        format!("{label}: 网络异常,请检查网络后重试")
+    }
+}
+
+/// 非 2xx 的统一文案(拆出纯函数便于单测):
+/// 限流/反爬通常直接回 403/502,必须按状态码拦下而不是硬解析错误页
+fn api_status_err(label: &str, code: u16) -> String {
+    format!("{label}接口异常(HTTP {code}),请稍后再试")
+}
+
+/// 平台接口 JSON 响应统一收口:非 2xx 直接报「接口异常(HTTP 码)」,
+/// 不再盲目 resp.json()——HTML 错误页硬解析只会得到
+/// 「expected value at line 1」这类不可操作的报错。
+/// label 为「平台+动作」短语(如「酷狗搜索」),用于拼装两类错误文案
+fn api_json(resp: reqwest::blocking::Response, label: &str) -> Result<serde_json::Value, String> {
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(api_status_err(label, status.as_u16()));
+    }
+    resp.json::<serde_json::Value>()
+        .map_err(|_| format!("{label}响应解析失败"))
+}
+
+// ===== 跨源标签归一化与字段解析(lib.rs 在线匹配链共用,全部纯函数) =====
+
+/// 繁体转简体(进程级单例转换器):normalize_tag 与现场版识别共用
+pub(crate) fn to_simplified(s: &str) -> String {
+    use character_converter::CharacterConverter;
+    static CONVERTER: std::sync::OnceLock<CharacterConverter> = std::sync::OnceLock::new();
+    CONVERTER
+        .get_or_init(CharacterConverter::new)
+        .traditional_to_simplified(s)
+}
+
+/// 归一化标签用于跨源比对:繁体转简体 + 小写 + 去空白(本地标签常见繁体/大小写差异)
+pub(crate) fn normalize_tag(s: &str) -> String {
+    to_simplified(s)
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// 归一化后的双向包含比对
+pub(crate) fn name_matches(a: &str, b: &str) -> bool {
+    let (a, b) = (normalize_tag(a), normalize_tag(b));
+    !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+}
+
+/// 艺人组任一分段与候选名比对成功即通过
+pub(crate) fn artist_matches(artist: &str, candidate: &str) -> bool {
+    artist
+        .split(['/', '&', ',', '、'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|seg| name_matches(seg, candidate))
+}
+
+/// 标题是否带现场/演唱会标记:live 需独立成词(避免 Alive/Livin' 误判),
+/// 中文无词边界直接子串判。现场版与录音室版的时间轴完全不同,选错版歌词必错位
+pub(crate) fn title_is_live(s: &str) -> bool {
+    let norm = to_simplified(s).to_lowercase();
+    if norm.contains("现场") || norm.contains("演唱会") || norm.contains("实况") {
+        return true;
+    }
+    norm.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| w == "live")
+}
+
+/// 去掉标题里的括号段(全角/半角):酷我搜索对括号敏感,
+/// 「八千里路明月照（挥笔生花问桀骜）」整串搜索命中不了原曲,去掉后能精确命中
+pub(crate) fn strip_bracketed(s: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0u32;
+    for c in s.chars() {
+        match c {
+            '(' | '（' | '【' | '「' | '『' | '[' => depth += 1,
+            ')' | '）' | '】' | '」' | '』' | ']' => {
+                depth = depth.saturating_sub(1);
+                out.push(' ');
+            }
+            c if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// 酷我搜索关键词:完整标题优先,有括号段时再补一条去括号的
+pub(crate) fn kuwo_keywords(title: &str, artist: &str) -> Vec<String> {
+    let mut keys = vec![format!("{title} {artist}")];
+    let stripped = strip_bracketed(title);
+    if !stripped.is_empty() && stripped != title {
+        keys.push(format!("{stripped} {artist}"));
+    }
+    keys
+}
+
+/// 酷我字段里的 HTML 实体解码(&apos; &nbsp; &amp; 等,数字实体一并处理)
+pub(crate) fn html_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find('&') {
+        out.push_str(&rest[..pos]);
+        rest = &rest[pos..];
+        let end = rest.find(';').map(|e| e + 1).unwrap_or(0);
+        if end == 0 || end > 10 {
+            out.push('&');
+            rest = &rest[1..];
+            continue;
+        }
+        let entity = &rest[..end];
+        let decoded = match entity {
+            "&apos;" | "&#39;" => Some('\''),
+            "&quot;" => Some('"'),
+            "&nbsp;" => Some('\u{a0}'),
+            "&amp;" => Some('&'),
+            "&lt;" => Some('<'),
+            "&gt;" => Some('>'),
+            _ => entity
+                .strip_prefix("&#")
+                .and_then(|n| n.strip_suffix(';'))
+                .and_then(|n| {
+                    u32::from_str_radix(
+                        n.trim_start_matches('x'),
+                        if n.starts_with('x') { 16 } else { 10 },
+                    )
+                    .ok()
+                })
+                .and_then(char::from_u32),
+        };
+        match decoded {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[end..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 酷我 r.s 返回单引号伪 JSON,转成严格 JSON:
+/// 仅当引号紧邻结构性字符(前一字符为 {[,: 或后一字符为 }],:)时视为定界符,
+/// 值内部的撇号(Don't)原样保留;找不到定界符时解析会失败并走优雅降级
+pub(crate) fn kuwo_fix_json(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut prev = '\0';
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '\'' {
+            let prev_struct = matches!(prev, '\0' | '{' | '[' | ':' | ',');
+            let mut next = ' ';
+            for &n in &chars[i + 1..] {
+                if !n.is_whitespace() {
+                    next = n;
+                    break;
+                }
+            }
+            let next_struct = matches!(next, '\0' | '}' | ']' | ':' | ',');
+            out.push(if prev_struct || next_struct {
+                '"'
+            } else {
+                '\''
+            });
+        } else {
+            out.push(c);
+        }
+        prev = c;
+    }
+    out
+}
+
+/// 把酷我 lrclist(time 为秒字符串)拼成标准 LRC 文本
+pub(crate) fn build_lrc_from_kuwo(lines: &[serde_json::Value]) -> Option<String> {
+    let mut out = String::new();
+    for l in lines {
+        let Some(text) = l["lineLyric"].as_str() else {
+            continue;
+        };
+        let t = l["time"]
+            .as_str()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .or_else(|| l["time"].as_f64());
+        let Some(t) = t else { continue };
+        let mut m = (t / 60.0).floor() as i64;
+        let mut s = t - m as f64 * 60.0;
+        if s >= 59.995 {
+            m += 1;
+            s = 0.0;
+        }
+        out.push_str(&format!("[{m:02}:{s:05.2}]{text}\n"));
+    }
+    (!out.is_empty()).then(|| out.trim_end().to_string())
 }
 
 fn build_payload(lrc: String, trans: Option<String>) -> Option<crate::lyrics::LyricsPayload> {
@@ -251,7 +525,7 @@ pub fn search_netease(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, Stri
     if keyword.is_empty() {
         return Ok(vec![]);
     }
-    let client = crate::netease_client();
+    let client = netease_client();
     let offset = page.saturating_mul(30).to_string();
     let resp = client
         .post("https://music.163.com/api/search/get/web")
@@ -262,8 +536,8 @@ pub fn search_netease(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, Stri
             ("offset", &offset),
         ])
         .send()
-        .map_err(|e| format!("搜索请求失败: {e}"))?;
-    let v: serde_json::Value = resp.json().map_err(|e| format!("搜索响应解析失败: {e}"))?;
+        .map_err(|e| net_err("网易云搜索请求失败", &e))?;
+    let v = api_json(resp, "网易云搜索")?;
     // 网易云偶发业务错误码(如 -462 反爬验证),有 code 且非 200 时透传
     if let Some(code) = v.get("code").and_then(|c| c.as_i64()) {
         if code != 200 {
@@ -289,14 +563,14 @@ const NETEASE_BR: &str = "320000";
 /// 返回空链即版权/VIP 受限,不做任何绕过,直接报错给前端提示。
 pub fn play_url_netease(id: &str) -> Result<String, String> {
     validate_id("netease", id)?;
-    let client = crate::netease_client();
+    let client = netease_client();
     let url = "https://music.163.com/api/song/enhance/player/url";
     let resp = client
         .get(url)
         .query(&[("ids", format!("[{id}]").as_str()), ("br", NETEASE_BR)])
         .send()
-        .map_err(|e| format!("取链请求失败: {e}"))?;
-    let v: serde_json::Value = resp.json().map_err(|e| format!("取链响应解析失败: {e}"))?;
+        .map_err(|e| net_err("网易云取链请求失败", &e))?;
+    let v = api_json(resp, "网易云取链")?;
     let item = v
         .get("data")
         .and_then(|d| d.as_array())
@@ -334,18 +608,18 @@ fn parse_lyric_json(v: &serde_json::Value) -> Option<(String, Option<String>)> {
 /// 返回 None = 该曲目确实没有歌词(区别于网络错误)
 pub fn lyric_netease(id: &str) -> Result<Option<(String, Option<String>)>, String> {
     validate_id("netease", id)?;
-    let client = crate::netease_client();
+    let client = netease_client();
     let resp = client
         .get("https://music.163.com/api/song/lyric")
         .query(&[("id", id), ("lv", "1"), ("kv", "1"), ("tv", "-1")])
         .send()
-        .map_err(|e| format!("歌词请求失败: {e}"))?;
-    let v: serde_json::Value = resp.json().map_err(|e| format!("歌词响应解析失败: {e}"))?;
+        .map_err(|e| net_err("网易云歌词请求失败", &e))?;
+    let v = api_json(resp, "网易云歌词")?;
     Ok(parse_lyric_json(&v))
 }
 
 /// 取网易云歌词并解析为播放器歌词载荷:
-/// 外语歌自动对齐官方译文(tlyric),对齐率不足四成时宁缺毋滥只保留原文——
+/// 外语歌自动对齐官方译文(tlyric),对齐率不足八成时宁缺毋滥只保留原文——
 /// 版本错位的双语比没有译文更糟。空词与请求失败都归一为 None(播放页显示无词)
 pub fn lyric_payload_netease(id: &str) -> Result<Option<crate::lyrics::LyricsPayload>, String> {
     let Some((lrc, trans)) = lyric_netease(id)? else {
@@ -366,25 +640,32 @@ fn parse_pic_url(v: &serde_json::Value) -> Option<String> {
         .map(|u| u.replacen("http://", "https://", 1))
 }
 
+/// 网易云 picUrl 尺寸归一:?param=WxH 会整体替换服务端出图尺寸,
+/// 已带的旧参数必须剥掉再拼 512 方图(与封面缓存档位对齐)。
+/// 纯函数,生产与单测共用同一份实现
+fn netease_cover_512(raw: &str) -> String {
+    let base = raw.split('?').next().unwrap_or(raw);
+    format!("{base}?param=512y512")
+}
+
 /// 取网易云专辑图直链(歌曲详情公开接口)。
 /// picUrl 支持 ?param=WxH 请求指定尺寸,这里要 512px 方图,与封面缓存档位对齐;
 /// 返回 None = 该曲无图(区别于网络错误)。主机不在白名单时同样按无图处理,
 /// 避免接口异常响应把 Rust 端变成任意 URL 下载器
 pub fn cover_url_netease(id: &str) -> Result<Option<String>, String> {
     validate_id("netease", id)?;
-    let client = crate::netease_client();
+    let client = netease_client();
     let url = format!("https://music.163.com/api/song/detail/?id=[{id}]&ids=[{id}]");
     let resp = client
         .get(url)
         .send()
-        .map_err(|e| format!("歌曲详情请求失败: {e}"))?;
-    let v: serde_json::Value = resp.json().map_err(|e| format!("详情响应解析失败: {e}"))?;
+        .map_err(|e| net_err("网易云歌曲详情请求失败", &e))?;
+    let v = api_json(resp, "网易云歌曲详情")?;
     let Some(raw) = parse_pic_url(&v) else {
         return Ok(None);
     };
     // URL 可能已带查询串,统一追加(或替换)param 为 512px 方图
-    let base = raw.split('?').next().unwrap_or(&raw);
-    Ok(restrict_cover_url("netease", &format!("{base}?param=512y512")).ok())
+    Ok(restrict_cover_url("netease", &netease_cover_512(&raw)).ok())
 }
 
 // ===== QQ 音乐 =====
@@ -459,10 +740,8 @@ pub fn search_qq(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String> {
             ("new_json", "1"),
         ])
         .send()
-        .map_err(|e| format!("QQ 搜索请求失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("QQ 搜索响应解析失败: {e}"))?;
+        .map_err(|e| net_err("QQ 搜索请求失败", &e))?;
+    let v = api_json(resp, "QQ 搜索")?;
     if let Some(code) = v.get("code").and_then(|c| c.as_i64()) {
         if code != 0 {
             return Err(format!("QQ 搜索失败(接口码 {code})"));
@@ -508,10 +787,8 @@ pub fn play_url_qq(id: &str) -> Result<String, String> {
         .post("https://u.y.qq.com/cgi-bin/musicu.fcg")
         .json(&body)
         .send()
-        .map_err(|e| format!("QQ 取链请求失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("QQ 取链响应解析失败: {e}"))?;
+        .map_err(|e| net_err("QQ 取链请求失败", &e))?;
+    let v = api_json(resp, "QQ 取链")?;
     let purl = v
         .pointer("/req_0/data/midurlinfo/0/purl")
         .and_then(|p| p.as_str())
@@ -529,10 +806,8 @@ pub fn lyric_payload_qq(id: &str) -> Result<Option<crate::lyrics::LyricsPayload>
         .get("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg")
         .query(&[("songmid", id), ("format", "json"), ("nobase64", "1")])
         .send()
-        .map_err(|e| format!("QQ 歌词请求失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("QQ 歌词响应解析失败: {e}"))?;
+        .map_err(|e| net_err("QQ 歌词请求失败", &e))?;
+    let v = api_json(resp, "QQ 歌词")?;
     let Some(lrc) = v
         .get("lyric")
         .and_then(|l| l.as_str())
@@ -641,10 +916,8 @@ pub fn search_kugou(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String
             ("appid", "1014"),
         ])
         .send()
-        .map_err(|e| format!("酷狗搜索请求失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("酷狗搜索响应解析失败: {e}"))?;
+        .map_err(|e| net_err("酷狗搜索请求失败", &e))?;
+    let v = api_json(resp, "酷狗搜索")?;
     let lists = v
         .get("data")
         .and_then(|d| d.get("lists"))
@@ -701,10 +974,8 @@ fn kugou_tracker_url(hash_lower: &str) -> Result<String, String> {
             ("behavior", "play"),
         ])
         .send()
-        .map_err(|e| format!("酷狗取链请求失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("酷狗取链响应解析失败: {e}"))?;
+        .map_err(|e| net_err("酷狗取链请求失败", &e))?;
+    let v = api_json(resp, "酷狗取链")?;
     if v.get("status").and_then(|s| s.as_u64()) != Some(1) {
         return Err("该曲目需要 VIP 或暂无版权,无法在线播放".into());
     }
@@ -733,6 +1004,13 @@ pub fn play_url_kugou(id: &str) -> Result<String, String> {
     kugou_tracker_url(&std_hash)
 }
 
+/// 从歌词候选里取 (id, accesskey)。任一缺失按无词处理返回 None:
+/// 接口改版出坏候选时若按 Err 上抛,get_lyrics 会按「失败不缓存」处理,
+/// 每次切歌都重打两跳接口,与全模块的宽松取值约定相悖
+fn kugou_candidate_key(cand: &serde_json::Value) -> Option<(&str, &str)> {
+    Some((cand.get("id")?.as_str()?, cand.get("accesskey")?.as_str()?))
+}
+
 /// 取酷狗歌词:先按 hash 查歌词候选,再下载 LRC(content 为 base64)
 pub fn lyric_payload_kugou(id: &str) -> Result<Option<crate::lyrics::LyricsPayload>, String> {
     validate_id("kugou", id)?;
@@ -748,10 +1026,8 @@ pub fn lyric_payload_kugou(id: &str) -> Result<Option<crate::lyrics::LyricsPaylo
             ("hash", hash.as_str()),
         ])
         .send()
-        .map_err(|e| format!("酷狗歌词搜索失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("酷狗歌词搜索解析失败: {e}"))?;
+        .map_err(|e| net_err("酷狗歌词搜索失败", &e))?;
+    let v = api_json(resp, "酷狗歌词搜索")?;
     let Some(cand) = v
         .get("candidates")
         .and_then(|c| c.as_array())
@@ -759,14 +1035,9 @@ pub fn lyric_payload_kugou(id: &str) -> Result<Option<crate::lyrics::LyricsPaylo
     else {
         return Ok(None);
     };
-    let lyric_id = cand
-        .get("id")
-        .and_then(|x| x.as_str())
-        .ok_or("酷狗歌词候选缺少 id")?;
-    let accesskey = cand
-        .get("accesskey")
-        .and_then(|x| x.as_str())
-        .ok_or("酷狗歌词候选缺少 accesskey")?;
+    let Some((lyric_id, accesskey)) = kugou_candidate_key(cand) else {
+        return Ok(None);
+    };
     let resp = kugou_client()
         .get("https://lyrics.kugou.com/download")
         .query(&[
@@ -778,10 +1049,8 @@ pub fn lyric_payload_kugou(id: &str) -> Result<Option<crate::lyrics::LyricsPaylo
             ("charset", "utf8"),
         ])
         .send()
-        .map_err(|e| format!("酷狗歌词下载失败: {e}"))?;
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("酷狗歌词下载解析失败: {e}"))?;
+        .map_err(|e| net_err("酷狗歌词下载失败", &e))?;
+    let v = api_json(resp, "酷狗歌词下载")?;
     let Some(content) = v.get("content").and_then(|c| c.as_str()) else {
         return Ok(None);
     };
@@ -879,38 +1148,57 @@ fn parse_kuwo_song(v: &serde_json::Value) -> Option<OnlineTrack> {
     })
 }
 
-/// 搜索酷我单曲(旧版公开搜索接口,返回单引号伪 JSON,复用 kuwo_fix_json)
+/// 酷我 r.s 搜索统一实现(在线搜索与本 crate 的本地匹配链共用):
+/// 返回 abslist 数组;单引号伪 JSON 先经 kuwo_fix_json 修复再解析。
+/// 两条调用链的参数分叉(client 档 / vipver / 每页条数)是历史现状,
+/// 这里只收敛代码不改变线上行为:在线搜索走 kt/30,本地匹配走 mp+vipver/10
+pub(crate) fn kuwo_rs_search(
+    client: &reqwest::blocking::Client,
+    keyword: &str,
+    page: u32,
+    page_size: u32,
+    client_tag: &str,
+    vipver: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut query = vec![
+        ("all", keyword.to_string()),
+        ("ft", "music".to_string()),
+        ("itemset", "web_2013".to_string()),
+        ("client", client_tag.to_string()),
+        ("pn", page.to_string()),
+        ("rn", page_size.to_string()),
+        ("rformat", "json".to_string()),
+        ("encoding", "utf8".to_string()),
+    ];
+    if let Some(v) = vipver {
+        query.push(("vipver", v.to_string()));
+    }
+    let resp = client
+        .get("https://search.kuwo.cn/r.s")
+        .query(&query)
+        .send()
+        .map_err(|e| net_err("酷我搜索请求失败", &e))?;
+    if !resp.status().is_success() {
+        return Err(api_status_err("酷我搜索", resp.status().as_u16()));
+    }
+    let raw = resp
+        .text()
+        .map_err(|_| "酷我搜索响应读取失败".to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&kuwo_fix_json(&raw))
+        .map_err(|_| "酷我搜索响应解析失败".to_string())?;
+    Ok(v.get("abslist")
+        .and_then(|l| l.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// 搜索酷我单曲(旧版公开搜索接口,走 kuwo_rs_search 的 kt/30 档)
 pub fn search_kuwo(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String> {
     let keyword = keyword.trim();
     if keyword.is_empty() {
         return Ok(vec![]);
     }
-    let p = page.to_string();
-    let resp = kuwo_client()
-        .get("https://search.kuwo.cn/r.s")
-        .query(&[
-            ("all", keyword),
-            ("ft", "music"),
-            ("itemset", "web_2013"),
-            ("client", "kt"),
-            ("pn", p.as_str()),
-            ("rn", "30"),
-            ("rformat", "json"),
-            ("encoding", "utf8"),
-        ])
-        .send()
-        .map_err(|e| format!("酷我搜索请求失败: {e}"))?;
-    let text = resp
-        .text()
-        .map_err(|e| format!("酷我搜索响应读取失败: {e}"))?;
-    let fixed = crate::kuwo_fix_json(&text);
-    let v: serde_json::Value =
-        serde_json::from_str(&fixed).map_err(|e| format!("酷我搜索响应解析失败: {e}"))?;
-    let list = v
-        .get("abslist")
-        .and_then(|l| l.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let list = kuwo_rs_search(&kuwo_client(), keyword, page, 30, "kt", None)?;
     Ok(list.iter().filter_map(parse_kuwo_song).collect())
 }
 
@@ -934,10 +1222,15 @@ pub fn play_url_kuwo(id: &str) -> Result<String, String> {
             ("rid", rid.as_str()),
         ])
         .send()
-        .map_err(|e| format!("酷我取链请求失败: {e}"))?;
+        .map_err(|e| net_err("酷我取链请求失败", &e))?;
+    // anti.s 成功时直接回 URL 纯文本,失败回错误页/空串:先按状态码拦一道,
+    // 不看状态码会把错误页文本当成直链落进「酷我暂未返回可用直链」
+    if !resp.status().is_success() {
+        return Err(api_status_err("酷我取链", resp.status().as_u16()));
+    }
     let link = resp
         .text()
-        .map_err(|e| format!("酷我取链响应读取失败: {e}"))?
+        .map_err(|_| "酷我取链响应读取失败".to_string())?
         .trim()
         .to_string();
     if link.is_empty() || !link.starts_with("http") {
@@ -1071,11 +1364,82 @@ mod tests {
 
     #[test]
     fn cover_url_pins_512_square() {
-        assert!(cover_url_netease_stub(None).is_none());
-        let u = cover_url_netease_stub(Some("https://p1.music.126.net/abc/1.jpg?param=300y300"));
+        // 已带其他尺寸参数时整体替换为 512 方图
         assert_eq!(
-            u.as_deref(),
+            netease_cover_512("https://p1.music.126.net/abc/1.jpg?param=300y300"),
+            "https://p1.music.126.net/abc/1.jpg?param=512y512"
+        );
+        // 无查询串的原样拼参数
+        assert_eq!(
+            netease_cover_512("https://p1.music.126.net/abc/1.jpg"),
+            "https://p1.music.126.net/abc/1.jpg?param=512y512"
+        );
+        // 生产链路收口:归一后的 URL 仍要过封面主机白名单(http 一并升 https)
+        let pinned = netease_cover_512("http://p1.music.126.net/abc/1.jpg?param=300y300");
+        assert_eq!(
+            restrict_cover_url("netease", &pinned).ok().as_deref(),
             Some("https://p1.music.126.net/abc/1.jpg?param=512y512")
+        );
+    }
+
+    #[test]
+    fn build_payload_merges_translation_when_alignment_is_high() {
+        // 全部配对(≥八成):官方译文并进双语载荷
+        let lrc = "[00:01.00]hello\n[00:02.00]world\n";
+        let trans = "[00:01.00]你好\n[00:02.00]世界\n";
+        let payload = build_payload(lrc.into(), Some(trans.into())).expect("合并后应有词");
+        let synced = payload.synced.expect("应有同步行");
+        assert_eq!(synced.len(), 2);
+        assert_eq!(synced[0].translation.as_deref(), Some("你好"));
+        assert_eq!(synced[1].translation.as_deref(), Some("世界"));
+    }
+
+    #[test]
+    fn build_payload_discards_misaligned_translation() {
+        // 译文时间轴整体错位(配对率 0 < 八成):宁缺毋滥,只保留原文
+        let lrc = "[00:01.00]hello\n[00:02.00]world\n";
+        let trans = "[01:30.00]你好\n[03:00.00]世界\n";
+        let payload = build_payload(lrc.into(), Some(trans.into())).expect("原文仍在");
+        let synced = payload.synced.expect("应有同步行");
+        assert_eq!(synced.len(), 2);
+        assert!(synced.iter().all(|l| l.translation.is_none()));
+    }
+
+    #[test]
+    fn build_payload_passthrough_without_translation() {
+        // 无译文时原文直通;空词解析为空载荷返回 None(播放页显示无词)
+        let payload = build_payload("[00:01.00]hi".into(), None).expect("有词");
+        assert_eq!(payload.synced.as_ref().unwrap()[0].text, "hi");
+        assert!(build_payload(String::new(), None).is_none());
+    }
+
+    #[test]
+    fn kugou_candidate_key_requires_id_and_accesskey() {
+        let ok = serde_json::json!({ "id": "123", "accesskey": "abc" });
+        assert_eq!(kugou_candidate_key(&ok), Some(("123", "abc")));
+        // 接口改版出的坏候选按无词处理(可缓存),不再当作错误反复重试
+        assert_eq!(
+            kugou_candidate_key(&serde_json::json!({ "id": "123" })),
+            None
+        );
+        assert_eq!(kugou_candidate_key(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn http_error_messages_are_actionable() {
+        // 非 2xx:报平台与状态码,不再把 HTML 错误页硬解析成「expected value」
+        assert_eq!(
+            api_status_err("酷狗搜索", 502),
+            "酷狗搜索接口异常(HTTP 502),请稍后再试"
+        );
+        // 传输层:超时与断连分开提示,不暴露 reqwest 原始错误串
+        assert_eq!(
+            net_err_text("酷狗搜索请求失败", true),
+            "酷狗搜索请求失败: 请求超时,请检查网络后重试"
+        );
+        assert_eq!(
+            net_err_text("QQ 搜索请求失败", false),
+            "QQ 搜索请求失败: 网络异常,请检查网络后重试"
         );
     }
 
@@ -1292,11 +1656,85 @@ mod tests {
         assert!(restrict_cover_url("kugou", "https://y.gtimg.cn/a.jpg").is_err());
     }
 
-    /// 尺寸归一逻辑的纯函数化测试桩:与 cover_url_netease 内的 map 分支一致
-    fn cover_url_netease_stub(url: Option<&str>) -> Option<String> {
-        url.and_then(|u| {
-            let base = u.split('?').next().unwrap_or(u);
-            restrict_cover_url("netease", &format!("{base}?param=512y512")).ok()
-        })
+    #[test]
+    fn kuwo_helpers_parse_pseudo_json_and_lrc() {
+        // 伪 JSON → 严格 JSON:定界引号转换,值内撇号保留
+        let raw = "{'ARTIST':'Don&apos;T STOP','DURATION':'324','abslist':[{'A':'x'},{'B':'y'}]}";
+        let fixed = kuwo_fix_json(raw);
+        let v: serde_json::Value = serde_json::from_str(&fixed).unwrap();
+        assert_eq!(v["abslist"][1]["B"], "y");
+        // HTML 实体解码
+        assert_eq!(html_unescape("Don&apos;T&nbsp;STOP"), "Don'T\u{a0}STOP");
+        assert_eq!(html_unescape("&#39;ok&#x26;"), "'ok&");
+        // lrclist → LRC 文本
+        let lines = vec![
+            serde_json::json!({"lineLyric": "今天我", "time": "19.34"}),
+            serde_json::json!({"lineLyric": "寒夜里看雪飘过", "time": "75"}),
+            serde_json::json!({"lineLyric": "", "time": "80"}),
+        ];
+        assert_eq!(
+            build_lrc_from_kuwo(&lines).as_deref(),
+            Some("[00:19.34]今天我\n[01:15.00]寒夜里看雪飘过\n[01:20.00]")
+        );
+        // 空列表 → None
+        assert_eq!(build_lrc_from_kuwo(&[]), None);
+    }
+
+    #[test]
+    fn strip_bracketed_removes_parenthetical_for_search() {
+        assert_eq!(
+            strip_bracketed("八千里路明月照（挥笔生花问桀骜）"),
+            "八千里路明月照"
+        );
+        assert_eq!(strip_bracketed("Song (Live)"), "Song");
+        assert_eq!(strip_bracketed("A【B】C"), "A C");
+        assert_eq!(strip_bracketed("普通标题"), "普通标题");
+        // 关键词组:完整标题在前,去括号的在后(与原标题相同则只有一条)
+        assert_eq!(
+            kuwo_keywords("八千里路明月照（挥笔生花问桀骜）", "泛国同学"),
+            vec![
+                "八千里路明月照（挥笔生花问桀骜） 泛国同学".to_string(),
+                "八千里路明月照 泛国同学".to_string(),
+            ]
+        );
+        assert_eq!(
+            kuwo_keywords("普通标题", "艺人"),
+            vec!["普通标题 艺人".to_string()]
+        );
+    }
+
+    #[test]
+    fn title_is_live_distinguishes_live_markers_from_lookalikes() {
+        // 常见现场版标记:英文括号后缀 / 中文标记 / 繁体
+        assert!(title_is_live("朋友们的酒 (Live in China)"));
+        assert!(title_is_live("Song (Live)"));
+        assert!(title_is_live("海阔天空（现场版）"));
+        assert!(title_is_live("海阔天空（現場）"));
+        assert!(title_is_live("演唱会 2023"));
+        assert!(title_is_live("Live版"));
+        // 误判防线:live 必须独立成词
+        assert!(!title_is_live("Alive"));
+        assert!(!title_is_live("Livin' on a Prayer"));
+        assert!(!title_is_live("普通标题"));
+    }
+
+    #[test]
+    fn name_matching_is_normalized() {
+        // 大小写
+        assert!(name_matches("Beyond", "BEYOND"));
+        // 繁简
+        assert!(name_matches("湯幻月", "汤幻月"));
+        // 空串不匹配
+        assert!(!name_matches("", "Beyond"));
+        // 无关艺人
+        assert!(!name_matches("Janet Jackson", "Beyond"));
+    }
+
+    #[test]
+    fn artist_group_matches_any_segment() {
+        // 多艺人组里任一命中即可,且繁体「湯」与简体「汤」互通
+        assert!(artist_matches("湯幻月/小义学长", "小义学长"));
+        assert!(artist_matches("湯幻月/小义学长", "汤幻月"));
+        assert!(!artist_matches("湯幻月/小义学长", "张治环"));
     }
 }
