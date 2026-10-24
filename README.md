@@ -109,7 +109,13 @@ src-tauri/
   src/online.rs         #   网易云/QQ/酷狗/酷我公开接口(搜索/取链/歌词/封面)与来源域名白名单
   src/model.rs          #   数据模型与 library.json 持久化(原子写 + 备份恢复)
   src/stats.rs          #   听歌统计合并与原子持久化(stats.json,仅本机)
-  src/lib.rs            #   Tauri commands(导入/导出/删除/在线匹配/文件关联)
+  src/lib.rs            #   Tauri commands 注册、AppState 与应用启动(run)
+  src/pack.rs           #   音乐包(TMC/TMCA/TMCL)导出、导入与预览(7z + SHA 校验去重)
+  src/import.rs         #   散装导入:复制进导入目录、ffmpeg 转码与内容指纹去重
+  src/enrich.rs         #   在线元数据补全编排(封面/歌词多级兜底匹配)与在线下载入库
+  src/trash.rs          #   应用内回收站:移入/还原/彻底清除/超期自动清理
+  src/playlists.rs      #   用户歌单 CRUD 实现与条目快照/命名助手
+  src/assoc.rs          #   文件关联与开机自启动(HKCU 注册表,用户级)
   src/media.rs          #   系统媒体控制(SMTC)+ 托盘播放控制菜单
   examples/make_fixture.rs      # 示例曲库生成器
   examples/make_tmc.rs          # TMC 演示包生成 + 解包/网易云调试工具

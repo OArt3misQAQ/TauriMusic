@@ -7,8 +7,10 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::import::IMPORT_DIR_NAME;
 use crate::model::{Library, ScanReport, Track};
-use crate::{sanitize_name, AppState, IMPORT_DIR_NAME, LIBRARY_FILE};
+use crate::pack::sanitize_name;
+use crate::{AppState, LIBRARY_FILE};
 
 /// mem::take 拿走旧曲库后的早退兜底:扫描中途任何 return/panic 都必须把曲目
 /// 放回 AppState——曲目被借走期间 lib.tracks 是空的,不兜底就会让用户曲库凭空消失。
