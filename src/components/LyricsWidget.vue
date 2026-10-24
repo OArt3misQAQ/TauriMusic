@@ -264,10 +264,9 @@ onUnmounted(() => {
 
 <style scoped>
 /* 沉浸文字模式:窗口全透明(配置 transparent),无任何底板——
-   背景板在深色壁纸上必然糊成死黑(旧版教训),可读性由投影承担。
-   投影刻意只用大半径低透明度的环境影:近距深影(哪怕 1px)贴着字形
-   就是一圈黑描边,亮色壁纸上尤其明显(用户反馈「隐隐一圈黑」);
-   柔和大影既能把字从亮背景上托出来,又不留下可见的暗边 */
+   背景板在深色壁纸上必然糊成死黑(旧版教训)。投影压到单层耳语级:
+   drop-shadow 叠层会互相再投影、浓度翻倍,大半径暗影本身就是一团
+   「模糊背景」(用户反馈),这里只留最低限度给亮壁纸兜底,无可见暗晕 */
 .lyr-root {
   height: 100%;
   box-sizing: border-box;
@@ -304,42 +303,39 @@ onUnmounted(() => {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.32)) drop-shadow(0 10px 30px rgba(0, 0, 0, 0.2));
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.18));
   transition: opacity 0.3s ease, filter 0.3s ease;
 }
-/* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次 */
+/* 对照译文:介于大字与预览行之间,近白但不用渐变,不与大字抢主次;
+   投影压薄后白色提到 0.94 补偿亮壁纸下的对比度 */
 .line-trans {
   font-size: calc(clamp(16px, 10vh, 24px) * var(--fs, 1));
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.94);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow:
-    0 1px 6px rgba(0, 0, 0, 0.32),
-    0 6px 22px rgba(0, 0, 0, 0.2);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 .line-main.idle {
   /* 暂停/未播放:去渐变降白,示意停机 */
   background: none;
   -webkit-text-fill-color: rgba(255, 255, 255, 0.55);
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.28));
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.16));
 }
 /* 下一句:小一号的次级白,预告走向 */
 .line-next {
   font-size: calc(clamp(13px, 8vh, 19px) * var(--fs, 1));
   font-weight: 650;
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.72);
   text-align: center;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow:
-    0 1px 6px rgba(0, 0, 0, 0.3),
-    0 5px 18px rgba(0, 0, 0, 0.18);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 /* 细进度线:贴在文字块下的 2.5px 圆角线,随播放推进 */
