@@ -5,12 +5,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { player, current, toggle, next, prev, setVolume, coverPathOf } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
+import { isMobile } from "../platform";
 
 const appWin = getCurrentWindow();
 const isMax = ref(false);
 let unlisten: (() => void) | null = null;
 
 onMounted(async () => {
+  // Android 的窗口由系统管理:无最小化/最大化,注册尺寸监听纯属浪费
+  if (isMobile) return;
   isMax.value = await appWin.isMaximized().catch(() => false);
   unlisten = await appWin.onResized(async () => {
     isMax.value = await appWin.isMaximized().catch(() => isMax.value);
@@ -115,7 +118,8 @@ const volFill = computed(() => `${player.volume * 100}%`);
       />
     </div>
 
-    <div class="caps">
+    <!-- 窗口控制:桌面(无系统装饰)才有;Android 由系统栏管理窗口 -->
+    <div v-if="!isMobile" class="caps">
       <button class="cap" title="最小化" @click="appWin.minimize()">
         <svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
       </button>

@@ -164,9 +164,14 @@ export function initTheme(): void {
     watchEffect(() => {
       ui.dark = ui.themeMode === "dark" || (ui.themeMode === "system" && systemDark.value);
       document.documentElement.classList.toggle("dark", ui.dark);
-      // 原生窗口边框/标题区颜色同步;"跟随系统"交还给系统
+      // 原生窗口边框/标题区颜色同步;"跟随系统"交还给系统。
+      // setTheme 是异步的,移动端无窗口主题概念,rejection 也要接住
       try {
-        void getCurrentWindow().setTheme(ui.themeMode === "system" ? null : ui.themeMode);
+        void getCurrentWindow()
+          .setTheme(ui.themeMode === "system" ? null : ui.themeMode)
+          .catch(() => {
+            /* Android 无窗口主题概念,失败静默 */
+          });
       } catch {
         /* 浏览器调试环境无窗口 */
       }

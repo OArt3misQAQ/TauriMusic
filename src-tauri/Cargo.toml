@@ -13,17 +13,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
-tauri-plugin-single-instance = "2"
+tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lofty = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-rfd = "0.15"
 walkdir = "2"
 encoding_rs = "0.8"
 character_converter = "1"
-trash = "5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json", "gzip"] }
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 mimalloc = "0.1"
@@ -31,6 +28,17 @@ sha2 = "0.11"
 md5 = "0.7"
 base64 = "0.22"
 sevenz-rust2 = "0.23.0"
+
+# 托盘、单实例、原生文件对话框、系统回收站只有桌面形态有意义:
+# Android 没有对应系统设施(托盘/互斥体/回收站),rfd 与 trash 也不支持
+# 移动目标,连同 tauri 的 tray-icon 特性一起按桌面目标门控。
+# 注意 Cargo 的 target 表只认内建 cfg(desktop/mobile 是 tauri-build 构建期
+# 注入的,仅 Rust 代码里可用),这里必须用 OS 白名单
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-single-instance = "2"
+rfd = "0.15"
+trash = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

@@ -5,6 +5,7 @@ import { lib, flashStatus, openImportDir, addFolder, rescan, importTmcPick, impo
 import { statsEnabled, setStatsEnabled, clearStats } from "../stores/stats";
 import { lyricsOn, toggleLyricsWindow } from "../stores/media";
 import { api, type AssocState } from "../api";
+import { isMobile } from "../platform";
 
 const skinOptions = [
   { value: "glass", label: "液态玻璃" },
@@ -136,7 +137,7 @@ async function clearStatsConfirmed(): Promise<void> {
           <span>通用</span>
         </div>
         <div class="group">
-          <button class="opt" @click="toggleAutostart">
+          <button v-if="!isMobile" class="opt" @click="toggleAutostart">
             <span class="label">开机自启动<small class="sub">登录 Windows 后自动启动,托盘常驻</small></span>
             <span class="switch" :class="{ on: autostart }"><i></i></span>
           </button>
@@ -206,7 +207,7 @@ async function clearStatsConfirmed(): Promise<void> {
               </button>
             </div>
           </div>
-          <div class="opt">
+          <div v-if="!isMobile" class="opt">
             <button class="lyr-toggle" @click="toggleLyrics">
               <span class="label">桌面歌词<small class="sub">桌面置顶小窗:歌词大字直接浮于桌面,右侧可调配颜色(浅色壁纸建议选深色),关闭主窗口仍在</small></span>
               <span class="switch" :class="{ on: lyricsOn }"><i></i></span>
@@ -220,7 +221,7 @@ async function clearStatsConfirmed(): Promise<void> {
               </button>
             </span>
           </div>
-          <div class="opt static">
+          <div v-if="!isMobile" class="opt static">
             <span class="label">歌词大小<small class="sub">档位决定字号上限,窗高随之适配;进度线可点击或拖动跳转</small></span>
             <div class="seg">
               <button
@@ -251,21 +252,21 @@ async function clearStatsConfirmed(): Promise<void> {
           <div class="opt static col-wrap">
             <span class="label">导入文件夹<small class="sub">{{ FORMAT_HINT }}</small></span>
             <div class="btns">
-              <button class="pill pill--hover mini" @click="addFolder">添加音乐文件夹</button>
-              <button class="pill pill--hover mini" @click="openImportDir">打开</button>
+              <button v-if="!isMobile" class="pill pill--hover mini" @click="addFolder">添加音乐文件夹</button>
+              <button v-if="!isMobile" class="pill pill--hover mini" @click="openImportDir">打开</button>
             </div>
             <p class="dir" :title="lib.importDir">{{ lib.importDir }}</p>
           </div>
           <div class="opt static">
             <span class="label">导入音乐文件<small class="sub">支持多选;导入后自动通过网易云公开接口匹配封面与歌词。APE / WMA 等非常规格式自动经内置 ffmpeg 转为无损 FLAC,原文件保持不动</small></span>
             <div class="btns">
-              <button class="pill pill--hover mini" @click="importMusicPick">选择文件</button>
+              <button v-if="!isMobile" class="pill pill--hover mini" @click="importMusicPick">选择文件</button>
             </div>
           </div>
           <div class="opt static col-wrap">
             <span class="label">TMC 音乐包<small class="sub">{{ TMC_HINT }}</small></span>
             <div class="btns">
-              <button class="pill pill--hover mini" @click="importTmcPick">导入 TMC / TMCL</button>
+              <button v-if="!isMobile" class="pill pill--hover mini" @click="importTmcPick">导入 TMC / TMCL</button>
             </div>
           </div>
         </div>
@@ -293,8 +294,8 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
       </section>
 
-      <!-- 格式关联 -->
-      <section class="sect">
+      <!-- 格式关联:桌面注册表能力,移动端无意义 -->
+      <section v-if="!isMobile" class="sect">
         <div class="sect-head">
           <span class="tint" style="--tint: #64d2ff">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">

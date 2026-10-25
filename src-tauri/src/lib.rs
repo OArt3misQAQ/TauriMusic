@@ -2,12 +2,15 @@ mod assoc;
 mod enrich;
 mod import;
 mod lyrics;
+// 托盘 + SMTC 与启动守卫都是桌面专属设施,Android 无对应系统组件
+#[cfg(desktop)]
 mod media;
 mod model;
 mod online;
 mod pack;
 mod playlists;
 mod scanner;
+#[cfg(desktop)]
 mod single_instance;
 mod stats;
 mod trash;
@@ -18,7 +21,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use tauri::{ipc::InvokeResponseBody, Listener, Manager, State, WindowEvent};
+use tauri::{ipc::InvokeResponseBody, Manager, State};
+// media://sys 托盘动作监听只在桌面接
+#[cfg(desktop)]
+use tauri::Listener;
+// 窗口事件(点 × 隐藏、托盘面板焦点抖动)只在桌面接
+#[cfg(desktop)]
+use tauri::WindowEvent;
 // 跨源标签归一化与酷我字段解析助手已下沉到 online.rs(纯函数,测试随迁):
 // enrich.rs 直接 use crate::online:: 取用;online.rs 自身仍经 crate::html_unescape
 // 解析,这条重导出就是它的锚点
@@ -55,6 +64,8 @@ use trash::{
 /// 磁盘全量重写(stats.json 随历史增长)压到最低 2 分钟一次,强冲不受限
 static STATS_LAST_SAVE: AtomicU64 = AtomicU64::new(0);
 
+// 主窗口唤起/切换只发生在桌面(单实例唤起、托盘动作);Android 的主窗口由系统管理
+#[cfg(desktop)]
 pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -63,6 +74,7 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 pub(crate) fn toggle_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if w.is_visible().unwrap_or(false) {
@@ -118,14 +130,23 @@ fn get_import_dir(app: tauri::AppHandle, state: State<AppState>) -> Result<Strin
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// 打开导入目录(桌面调资源管理器;移动端无独立文件管理器概念)
 #[tauri::command]
 fn open_import_dir(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
-    let dir = ensure_import_dir(&app, &state)?;
-    std::process::Command::new("explorer")
-        .arg(&dir)
-        .spawn()
-        .map_err(|e| format!("打开资源管理器失败: {e}"))?;
-    Ok(dir.to_string_lossy().into_owned())
+    #[cfg(desktop)]
+    {
+        let dir = ensure_import_dir(&app, &state)?;
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+        Ok(dir.to_string_lossy().into_owned())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (&app, &state);
+        Err("移动端不支持打开文件管理器".into())
+    }
 }
 
 /// 拖拽导入:整个文件夹登记为扫描来源(不复制),散装音频/歌词文件复制进导入目录
@@ -178,20 +199,37 @@ fn take_pending_imports(state: tauri::State<AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 显示桌面歌词小窗(常驻窗口,启动即创建;显示/隐藏状态由前端记忆)
+/// 显示桌面歌词小窗(常驻窗口,启动即创建;显示/隐藏状态由前端记忆)。
+/// 移动端无多窗口,前端不应调到这里;保底返回成功避免 UI 报错
 #[tauri::command]
 fn show_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
-    let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
-    let _ = w.show();
-    Ok(())
+    #[cfg(desktop)]
+    {
+        let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
+        let _ = w.show();
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = &app;
+        Ok(())
+    }
 }
 
-/// 隐藏桌面歌词小窗
+/// 隐藏桌面歌词小窗(移动端同为无操作)
 #[tauri::command]
 fn hide_lyrics_window(app: tauri::AppHandle) -> Result<(), String> {
-    let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
-    let _ = w.hide();
-    Ok(())
+    #[cfg(desktop)]
+    {
+        let w = app.get_webview_window("lyrics").ok_or("歌词窗口不存在")?;
+        let _ = w.hide();
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = &app;
+        Ok(())
+    }
 }
 
 /// 为一次导出创建 Temp 暂存目录:包裹先打包在这里,用户点「导出」后才落位到所选位置
@@ -232,40 +270,57 @@ async fn stage_tmc(id: String, staging: String, app: tauri::AppHandle) -> Result
 
 #[tauri::command]
 async fn pick_tmc_file() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .set_title("选择音乐包(TMC / TMCL)")
-        .add_filter("音乐包 (*.tmc, *.tmcl, *.tmca)", &["tmc", "tmcl", "tmca"])
-        .pick_file()
-        .await
-        .map(|f| f.path().to_string_lossy().to_string())
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("选择音乐包(TMC / TMCL)")
+            .add_filter("音乐包 (*.tmc, *.tmcl, *.tmca)", &["tmc", "tmcl", "tmca"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_string_lossy().to_string())
+    }
+    // 移动端没有原生文件选择对话框:返回 None 走"用户取消"分支,
+    // 前端按平台隐藏入口后正常不会调到这里
+    #[cfg(mobile)]
+    None
 }
 
 #[tauri::command]
 async fn pick_audio_files() -> Option<Vec<String>> {
-    rfd::AsyncFileDialog::new()
-        .set_title("选择音乐文件")
-        .add_filter(
-            "音频文件",
-            &["mp3", "m4a", "flac", "ogg", "oga", "opus", "wav"],
-        )
-        .pick_files()
-        .await
-        .map(|files| {
-            files
-                .iter()
-                .map(|f| f.path().to_string_lossy().to_string())
-                .collect()
-        })
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("选择音乐文件")
+            .add_filter(
+                "音频文件",
+                &["mp3", "m4a", "flac", "ogg", "oga", "opus", "wav"],
+            )
+            .pick_files()
+            .await
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|f| f.path().to_string_lossy().to_string())
+                    .collect()
+            })
+    }
+    #[cfg(mobile)]
+    None
 }
 
 /// 批量导出的目标文件夹
 #[tauri::command]
 async fn pick_export_dir() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .set_title("选择导出位置")
-        .pick_folder()
-        .await
-        .map(|f| f.path().to_string_lossy().to_string())
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("选择导出位置")
+            .pick_folder()
+            .await
+            .map(|f| f.path().to_string_lossy().to_string())
+    }
+    #[cfg(mobile)]
+    None
 }
 
 /// 把暂存好的完整包裹落位到用户目录:同名自动加序号,
@@ -592,6 +647,8 @@ async fn stats_clear(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 // ===== 系统媒体控制(SMTC)+ 托盘菜单的状态推送(见 media.rs) =====
+// Android 系统的媒体通知走 MediaSession,由 WebView 的媒体元素自行对接,
+// 这里无需推送;命令保留并在移动端空转,前端调用面保持两端一致
 
 #[tauri::command]
 fn smtc_set_track(
@@ -601,20 +658,44 @@ fn smtc_set_track(
     cover: Option<String>,
     duration: f64,
 ) -> Result<(), String> {
-    media::on_track(&app, title, artist, cover, duration);
-    Ok(())
+    #[cfg(desktop)]
+    {
+        media::on_track(&app, title, artist, cover, duration);
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, title, artist, cover, duration);
+        Ok(())
+    }
 }
 
 #[tauri::command]
 fn smtc_set_status(app: tauri::AppHandle, playing: bool) -> Result<(), String> {
-    media::on_status(&app, playing);
-    Ok(())
+    #[cfg(desktop)]
+    {
+        media::on_status(&app, playing);
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, playing);
+        Ok(())
+    }
 }
 
 #[tauri::command]
 fn smtc_set_position(app: tauri::AppHandle, position: f64, duration: f64) -> Result<(), String> {
-    media::on_position(&app, position, duration);
-    Ok(())
+    #[cfg(desktop)]
+    {
+        media::on_position(&app, position, duration);
+        Ok(())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, position, duration);
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -698,11 +779,16 @@ async fn remove_folder(path: String, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 async fn pick_music_folder() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .set_title("选择音乐文件夹")
-        .pick_folder()
-        .await
-        .map(|f| f.path().to_string_lossy().to_string())
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("选择音乐文件夹")
+            .pick_folder()
+            .await
+            .map(|f| f.path().to_string_lossy().to_string())
+    }
+    #[cfg(mobile)]
+    None
 }
 
 #[derive(serde::Serialize)]
@@ -840,11 +926,18 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 启动守卫：已有实例运行时询问是否重启（旧实例卡死时的兜底）；
-    // 放行与否最终仍由下面的单实例插件裁定，这里只负责询问与清场
+    // 放行与否最终仍由下面的单实例插件裁定，这里只负责询问与清场。
+    // Android 单任务应用无多实例概念,守卫只在桌面编译
+    #[cfg(desktop)]
     if !single_instance::guard_startup() {
         return;
     }
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // 桌面专属接线:二次启动唤起已有窗口并把传入文件交给运行中实例;
+    // 窗口事件——点 × 隐藏到托盘常驻、托盘迷你面板失焦即隐藏。
+    // Android 无多窗口/托盘,也不存在"二次启动进运行实例"的路径
+    #[cfg(desktop)]
+    let builder = builder
         // 二次启动时唤起已有窗口,并把传入的文件交给运行中的实例导入
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             show_main(app);
@@ -867,7 +960,8 @@ pub fn run() {
                 let _ = window.hide();
             }
             _ => {}
-        })
+        });
+    builder
         .setup(|app| {
             let handle = app.handle();
             let data_dir = handle.path().app_data_dir().expect("无法确定应用数据目录");
@@ -895,39 +989,57 @@ pub fn run() {
             refresh_asset_scope(handle);
             // 清理超过保留期的回收站条目
             purge_expired_trash(handle);
-            // 窗口在配置里全部 create:false,由这里手动创建:Tauri 内部顺序是
-            // 先建窗口(WebView 立即加载前端)后跑本钩子,冷启动时前端会抢在
-            // .manage 之前调命令,报「state not managed」→「曲库读取失败」。
-            // 状态注册完毕后才开始加载页面,竞态从根上消除
-            for window_config in app.config().app.windows.iter() {
-                tauri::WebviewWindowBuilder::from_config(handle, window_config)?.build()?;
-            }
-            // 命令行/双击"打开方式"传入的文件
+            // 命令行/双击"打开方式"传入的文件(Android 下无命令行参数,空转)
             let cli_args: Vec<String> = std::env::args().collect();
             handle_open_paths(handle, &cli_args);
 
-            // 托盘 + 系统媒体控制(SMTC):迷你面板/封面/进度/播放控制都在 media.rs
-            media::init(handle)?;
-
-            // 托盘迷你面板的系统级动作(退出/唤起主窗口)由前端 emit 过来
-            let sys_handle = handle.clone();
-            handle.listen("media://sys", move |event| {
-                match event.payload().trim_matches('"') {
-                    "quit" => {
-                        // 真正退出前把内存里的统计增量落盘:落盘节流期间
-                        // 磁盘副本可能落后内存最多 2 分钟,kill 掉就永久丢了
-                        let state = sys_handle.state::<AppState>();
-                        if let Ok(s) = state.stats.lock() {
-                            if let Err(e) = s.save(&state.data_dir.join(stats::STATS_FILE)) {
-                                eprintln!("[stats] 退出前落盘失败: {e}");
-                            }
-                        }
-                        sys_handle.exit(0)
-                    }
-                    "show" => crate::show_main(&sys_handle),
-                    _ => {}
+            #[cfg(desktop)]
+            {
+                // 窗口在配置里全部 create:false,由这里手动创建:Tauri 内部顺序是
+                // 先建窗口(WebView 立即加载前端)后跑本钩子,冷启动时前端会抢在
+                // .manage 之前调命令,报「state not managed」→「曲库读取失败」。
+                // 状态注册完毕后才开始加载页面,竞态从根上消除。
+                // Android 的主 WebView 由 Activity 自己创建,不走这份配置
+                for window_config in app.config().app.windows.iter() {
+                    tauri::WebviewWindowBuilder::from_config(handle, window_config)?.build()?;
                 }
-            });
+
+                // 托盘 + 系统媒体控制(SMTC):迷你面板/封面/进度/播放控制都在 media.rs
+                media::init(handle)?;
+
+                // 托盘迷你面板的系统级动作(退出/唤起主窗口)由前端 emit 过来
+                let sys_handle = handle.clone();
+                handle.listen("media://sys", move |event| {
+                    match event.payload().trim_matches('"') {
+                        "quit" => {
+                            // 真正退出前把内存里的统计增量落盘:落盘节流期间
+                            // 磁盘副本可能落后内存最多 2 分钟,kill 掉就永久丢了
+                            let state = sys_handle.state::<AppState>();
+                            if let Ok(s) = state.stats.lock() {
+                                if let Err(e) = s.save(&state.data_dir.join(stats::STATS_FILE)) {
+                                    eprintln!("[stats] 退出前落盘失败: {e}");
+                                }
+                            }
+                            sys_handle.exit(0)
+                        }
+                        "show" => crate::show_main(&sys_handle),
+                        _ => {}
+                    }
+                });
+            }
+            // Android 只有一个主窗口形态:配置里全部 create:false(桌面按上面手动建),
+            // 核心 setup 又只自动建 create:true 的窗口,这里必须显式建主窗口,
+            // 否则 Activity 常驻空白主题背景,WebView 根本不会被创建
+            #[cfg(mobile)]
+            for window_config in app
+                .config()
+                .app
+                .windows
+                .iter()
+                .filter(|w| w.label == "main")
+            {
+                tauri::WebviewWindowBuilder::from_config(handle, window_config)?.build()?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

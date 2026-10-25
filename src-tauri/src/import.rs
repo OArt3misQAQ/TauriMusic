@@ -3,7 +3,10 @@
 use crate::model::Library;
 use crate::pack::{record_track_shas, sha256_hex};
 use crate::scanner;
-use crate::{lock_scan_gate, refresh_asset_scope, show_main, AppState, LIBRARY_FILE};
+use crate::{lock_scan_gate, refresh_asset_scope, AppState, LIBRARY_FILE};
+// 唤起主窗口是桌面专属(单实例/文件关联场景);Android 的主窗口由系统管理
+#[cfg(desktop)]
+use crate::show_main;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
@@ -432,6 +435,7 @@ pub(crate) fn handle_open_paths(app: &tauri::AppHandle, args: &[String]) {
                     g.extend(packages.iter().cloned());
                 }
                 let _ = app.emit("import-request", packages.len() as u32);
+                #[cfg(desktop)]
                 show_main(&app);
             }
             if !loose.is_empty() {

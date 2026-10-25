@@ -29,6 +29,19 @@ src-tauri/gen/schemas/
 src-tauri/icons/android/
 src-tauri/icons/ios/
 
+# Android 工程:gen/android 源码入库,构建产物与机器相关文件除外
+# (根 *.gitignore 规则会把 gen/android 内置 .gitignore 排除在库外,故在此显式列出)
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/build/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/buildSrc/build/
+src-tauri/gen/android/app/.cxx/
+src-tauri/gen/android/.idea/
+src-tauri/gen/android/local.properties
+# gradle 打包前由构建流程填充:前端 dist 副本与 Rust .so,均为产物
+src-tauri/gen/android/app/src/main/assets/
+src-tauri/gen/android/app/src/main/jniLibs/
+
 # Test fixture output
 test-music/
 .ref/

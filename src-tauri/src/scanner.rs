@@ -797,6 +797,19 @@ fn peek_artist_album(path: &Path) -> Option<(String, String)> {
     ))
 }
 
+/// 重复文件移除:桌面进系统回收站(可恢复);Android 无系统回收站设施,
+/// trash crate 也不支持该目标,退化为直接删除(失败则原文件保持原位)
+fn remove_dedup_file(path: &Path) -> bool {
+    #[cfg(desktop)]
+    {
+        trash::delete(path).is_ok()
+    }
+    #[cfg(mobile)]
+    {
+        fs::remove_file(path).is_ok()
+    }
+}
+
 /// 把导入目录顶层的散装音频按「艺人\专辑\文件名」归位,同 stem 的 .lrc / 专属封面一起移动。
 /// 只整理应用自己的导入目录(用户登记的外部文件夹一律不动);正在播放等导致 rename 失败时保持原位。
 fn organize_top_level(import_dir: &Path, files: &mut Vec<PathBuf>) {
@@ -838,7 +851,7 @@ fn organize_top_level(import_dir: &Path, files: &mut Vec<PathBuf>) {
                 (Ok(a), Ok(b)) => a.len() == b.len(),
                 _ => false,
             };
-            if dup && trash::delete(&path).is_ok() {
+            if dup && remove_dedup_file(&path) {
                 files.retain(|f| f != &path);
             }
             continue;

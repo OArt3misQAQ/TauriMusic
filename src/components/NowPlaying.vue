@@ -19,6 +19,7 @@ import ModeIcon from "./ModeIcon.vue";
 import { ui } from "../stores/ui";
 import { flash } from "../stores/player";
 import { lyricsOn, toggleLyricsWindow } from "../stores/media";
+import { isMobile } from "../platform";
 
 /** 播放页直达开关桌面歌词:与设置页共用同一份状态(media store) */
 async function onToggleLyrics(): Promise<void> {
@@ -149,7 +150,7 @@ watch(
   <div class="np" :class="{ 'queue-open': queueOpen }" :style="bgStyle">
     <!-- 右上角独立动作区:桌面歌词开关与收起,不与底部传输控件混排 -->
     <div class="corner">
-      <button class="t-btn corner-btn" :class="{ on: lyricsOn }" title="桌面歌词" @click="onToggleLyrics">
+      <button v-if="!isMobile" class="t-btn corner-btn" :class="{ on: lyricsOn }" title="桌面歌词" @click="onToggleLyrics">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <rect x="3" y="4.5" width="18" height="13.5" rx="2.2" />
           <path d="M7 9.4h10" />

@@ -1,6 +1,6 @@
 # TauriMusic
 
-参考 Apple Music 设计语言的本地音乐播放器,基于 **Rust + Tauri 2 + Vue 3** 构建,并内置网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐免费曲目在线试听。
+参考 Apple Music 设计语言的本地音乐播放器,基于 **Rust + Tauri 2 + Vue 3** 构建,并内置网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐免费曲目在线试听。桌面端打包 Windows,另有基于 Tauri 2 移动支持的 **Android 版本**(曲库 / 本地播放 / 在线试听可用;托盘、桌面歌词、文件关联等桌面形态能力不适用)。
 
 ![TauriMusic](https://img.shields.io/badge/Tauri-2-24C8D8) ![Rust](https://img.shields.io/badge/Rust-stable-DEA584) ![Vue](https://img.shields.io/badge/Vue-3-42B883)
 
@@ -52,19 +52,24 @@
 
 ```bash
 npm install        # 安装前端依赖
-npm run tauri dev  # 开发模式运行
+npm run tauri dev  # 开发模式运行(桌面)
 ```
 
 要求:Node.js ≥ 20.19、Rust stable、WebView2(Windows 11 自带)。
+
+Android 开发:需 Android SDK + NDK(r27+)、JDK 17,并安装 Rust 的 `aarch64-linux-android` / `x86_64-linux-android` 等目标;`ANDROID_HOME`、`NDK_HOME`、`JAVA_HOME` 就绪后,`src-tauri/gen/android` 内已含 Gradle 工程(`tauri android init` 生成)。
 
 ## 构建
 
 ```bash
 npm run tauri build             # 产出安装包(msi / nsis)
 npm run tauri build -- --no-bundle  # 仅产出绿色版 exe
+npm run tauri android build --debug --target x86_64   # Android 模拟器调试 APK(真机用 aarch64)
 ```
 
-产物位于 `src-tauri/target/release/tauri-music.exe`。推送 `v*` tag 到 GitHub 会自动构建安装包并发布 Release。
+产物位于 `src-tauri/target/release/tauri-music.exe`;Android APK 在 `src-tauri/gen/android/app/build/outputs/apk/`。推送 `v*` tag 到 GitHub 会自动构建安装包并发布 Release。
+
+> Windows 上未开启开发者模式时,tauri CLI 无法把 `.so` 符号链接进 jniLibs:可开启系统「开发者模式」,或先 `cargo build` 再把 `target/<三元组>/debug/libtauri_music_lib.so` 复制到 `gen/android/app/src/main/jniLibs/<abi>/`、`dist/` 复制到 `gen/android/app/src/main/assets/`,然后直接调 `gen/android` 里的 `gradlew assembleX86_64Debug`。
 
 ## 测试与代码质量
 
@@ -109,14 +114,15 @@ src-tauri/
   src/online.rs         #   网易云/QQ/酷狗/酷我公开接口(搜索/取链/歌词/封面)与来源域名白名单
   src/model.rs          #   数据模型与 library.json 持久化(原子写 + 备份恢复)
   src/stats.rs          #   听歌统计合并与原子持久化(stats.json,仅本机)
-  src/lib.rs            #   Tauri commands 注册、AppState 与应用启动(run)
+  src/lib.rs            #   Tauri commands 注册、AppState 与应用启动(run;桌面/移动按 cfg 分门)
   src/pack.rs           #   音乐包(TMC/TMCA/TMCL)导出、导入与预览(7z + SHA 校验去重)
   src/import.rs         #   散装导入:复制进导入目录、ffmpeg 转码与内容指纹去重
   src/enrich.rs         #   在线元数据补全编排(封面/歌词多级兜底匹配)与在线下载入库
   src/trash.rs          #   应用内回收站:移入/还原/彻底清除/超期自动清理
   src/playlists.rs      #   用户歌单 CRUD 实现与条目快照/命名助手
-  src/assoc.rs          #   文件关联与开机自启动(HKCU 注册表,用户级)
-  src/media.rs          #   系统媒体控制(SMTC)+ 托盘播放控制菜单
+  src/assoc.rs          #   文件关联与开机自启动(HKCU 注册表,用户级;桌面专属)
+  src/media.rs          #   系统媒体控制(SMTC)+ 托盘播放控制菜单(桌面专属)
+  gen/android/          #   Android Gradle 工程(tauri android init 生成,含 MainActivity 调试开关)
   examples/make_fixture.rs      # 示例曲库生成器
   examples/make_tmc.rs          # TMC 演示包生成 + 解包/网易云调试工具
   examples/make_beyond_tmc.rs   # 批量音频打包 TMC(元数据自动补齐)
@@ -134,6 +140,8 @@ TauriMusic-promo/       # 宣传素材
 - 封面缓存:`%LOCALAPPDATA%\com.art3mis.taurimusic\covers\`(本地 256px 列表图 + 512px 详情图两级缩略图,列表场景解码内存降至 1/4;在线曲目封面落在 `covers/online/{来源}_{平台id}.jpg`,网易云沿用 `{平台id}.jpg`;每次扫描自动清理已删音乐残留的孤儿缩略图)
 
 删除这两个目录即可完全重置应用。
+
+Android 端路径随系统走应用私有目录:曲库/统计/回收站与导入目录(`Music/`)在应用内部存储 `/data/user/0/com.art3mis.taurimusic/`,封面缓存在应用缓存目录 `covers/`;卸载应用即全部清除。
 
 ## 许可
 
