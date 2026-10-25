@@ -113,5 +113,5 @@ jobs:
         if: github.event_name == 'push'
         with:
           name: tauri-music-android-arm64-debug
-          path: src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           retention-days: 3

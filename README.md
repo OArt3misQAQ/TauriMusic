@@ -68,8 +68,8 @@ Android 开发:需 Android SDK + NDK(r27+)、JDK 17,并安装 Rust 的 `aarch64-
 | --- | --- | --- |
 | Windows 安装包 | `npm run build:windows` | `src-tauri/target/release/bundle/`（msi / nsis） |
 | Android Release（全 ABI） | `npm run build:android` | `src-tauri/gen/android/app/build/outputs/apk/` 与 `bundle/`（AAB）；首次需配置签名 |
-| Android 真机调试 | `npm run build:android:phone` | `src-tauri/gen/android/app/build/outputs/apk/arm64/debug/` |
-| Android 模拟器调试 | `npm run build:android:emulator` | `src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/` |
+| Android 真机调试 | `npm run build:android:phone` | `src-tauri/gen/android/app/build/outputs/apk/`（CLI 单目标为 `universal/debug/`） |
+| Android 模拟器调试 | `npm run build:android:emulator` | `src-tauri/gen/android/app/build/outputs/apk/`（手动 Gradle 为 `x86_64/debug/`） |
 
 ```bash
 npm run build:windows                 # 桌面安装包

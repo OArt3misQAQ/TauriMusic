@@ -83,6 +83,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist-android
-          cp src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk \
-            "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk"
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)
+          test -n "$APK"
+          cp "$APK" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk"
           gh release upload "${GITHUB_REF_NAME}" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk" --clobber
