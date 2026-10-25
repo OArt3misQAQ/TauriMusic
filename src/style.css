@@ -18,6 +18,8 @@
   --pill-bg: rgba(120, 120, 128, 0.14);
   --scrollbar: rgba(0, 0, 0, 0.28);
   --bar-bg: rgba(247, 247, 249, 0.88);
+  /* 流畅模式用的实底铬面:去掉模糊后仍要挡住背后的滚动内容 */
+  --bg-2-solid: #f6f6f8;
 
   /* 动效令牌 —— HIG Motion:弹簧物理、可中断、无突然停止。
      --ease-out-soft 用于页面级位移/淡入(丝滑减速),
@@ -47,6 +49,7 @@ html.dark {
   --pill-bg: rgba(120, 120, 128, 0.26);
   --scrollbar: rgba(255, 255, 255, 0.3);
   --bar-bg: rgba(20, 20, 22, 0.88);
+  --bg-2-solid: #121214;
 }
 
 * {
@@ -164,6 +167,13 @@ img {
   height: 100%;
   overflow-y: auto;
   padding: 28px 36px 48px;
+}
+
+/* 手机:内容区收窄边距;底部由 Tab 栏让开手势条,页面自身不再重复加安全区 */
+@media (max-width: 860px) {
+  .view {
+    padding: 16px 16px 28px;
+  }
 }
 
 .view-head {
@@ -1129,4 +1139,31 @@ html.dark.glass.lyrics-host body {
 html[data-skin="paper"].tray-host body::after,
 html[data-skin="paper"].lyrics-host body::after {
   content: none;
+}
+
+/* ===== 手机流畅模式(设置 → 性能与动效) =====
+   用户在手机上可选流畅/精致:流畅模式砍掉全屏模糊、氛围背景与所有
+   backdrop-filter,铬面改实底;精致模式保留完整玻璃与氛围 */
+:root.mobile.perf-smooth .ambient {
+  display: none !important;
+}
+:root.mobile.perf-smooth *,
+:root.mobile.perf-smooth *::before,
+:root.mobile.perf-smooth *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+:root.mobile.perf-smooth .tabbar,
+:root.mobile.perf-smooth .mini,
+:root.mobile.perf-smooth .lib-bar,
+:root.mobile.perf-smooth .menu {
+  background: var(--bg-2-solid) !important;
+}
+:root.mobile.perf-smooth .mini-wash {
+  display: none !important;
+}
+:root.mobile.perf-smooth .np::before {
+  filter: none !important;
+  transform: none !important;
+  background: linear-gradient(160deg, #2c2023 0%, #1a1518 52%, #101012 100%) !important;
 }

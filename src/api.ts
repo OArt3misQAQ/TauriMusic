@@ -66,6 +66,12 @@ export interface OnlineTrack {
   cover: string | null;
 }
 
+/** Android 系统分享收件箱条目:path 位于应用缓存,导入完成后应丢弃 */
+export interface SharedAudio {
+  path: string;
+  name: string;
+}
+
 /** 下载入库时附带的曲目元数据(取自搜索结果,决定内嵌标签与文件名) */
 export interface OnlineDownloadMeta {
   name: string;
@@ -329,6 +335,9 @@ export const api = {
   discardPreview: (id: string) => invoke<void>("discard_preview", { id }),
   /** 拉走并清空待预览的音乐包路径(启动期前端未就绪时后端先入队) */
   takePendingImports: () => invoke<string[]>("take_pending_imports"),
+  /** Android 系统分享来的音频(已复制到缓存),返回本地路径与展示名 */
+  takeSharedAudio: () => invoke<SharedAudio[]>("take_shared_audio"),
+  discardSharedAudio: (paths: string[]) => invoke<void>("discard_shared_audio", { paths }),
   /** 显示/隐藏桌面歌词小窗 */
   showLyricsWindow: () => invoke<void>("show_lyrics_window"),
   hideLyricsWindow: () => invoke<void>("hide_lyrics_window"),

@@ -1,0 +1,38 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- TauriMusic 应用图标 · 墨夜赤胶
+       深暖墨底 + 品牌赤红黑胶 + 奶油唱贴 + 播放三角。
+       全部手绘几何,无字体无素材引用。 -->
+  <defs>
+    <linearGradient id="icon-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b211b"/>
+      <stop offset="1" stop-color="#15100d"/>
+    </linearGradient>
+    <linearGradient id="icon-disc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fa233b"/>
+      <stop offset="0.55" stop-color="#d91a33"/>
+      <stop offset="1" stop-color="#a50f24"/>
+    </linearGradient>
+    <linearGradient id="icon-label" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f3ea"/>
+      <stop offset="1" stop-color="#e9e1d3"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#icon-bg)"/>
+  <!-- 盘缘微光,让黑胶在深底上有层次 -->
+  <circle cx="512" cy="512" r="352" fill="none" stroke="#f7f3ea" stroke-opacity="0.06" stroke-width="6"/>
+
+  <circle cx="512" cy="512" r="340" fill="url(#icon-disc)"/>
+  <!-- 三道沟槽 -->
+  <g fill="none" stroke="#6f0a1a" stroke-opacity="0.38" stroke-width="2.6">
+    <circle cx="512" cy="512" r="300"/>
+    <circle cx="512" cy="512" r="262"/>
+    <circle cx="512" cy="512" r="224"/>
+  </g>
+  <!-- 左上盘缘高光 -->
+  <path d="M 207 458 A 310 310 0 0 1 458 207" fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- 奶油唱贴 + 播放三角 -->
+  <circle cx="512" cy="512" r="126" fill="url(#icon-label)"/>
+  <path d="M 476 448 L 580 512 L 476 576 Z" fill="#1a1411"/>
+</svg>

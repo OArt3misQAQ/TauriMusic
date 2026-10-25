@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { player, current, toggle, next, prev, setVolume, coverPathOf } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
+import BrandMark from "./BrandMark.vue";
 import { ui } from "../stores/ui";
 import { isMobile } from "../platform";
 
@@ -36,14 +37,7 @@ const volFill = computed(() => `${player.volume * 100}%`);
     <!-- 播放页打开时的烟熏染色层:白色玻璃淡出、它淡入,顶栏随之融进深色播放页 -->
     <i class="np-tint" aria-hidden="true"></i>
     <div class="brand">
-      <span class="logo">
-        <svg viewBox="0 0 24 24">
-          <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
-          <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-          <circle cx="12" cy="12" r="3.4" fill="#fff" />
-          <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-        </svg>
-      </span>
+      <span class="logo"><BrandMark /></span>
       <span class="name">TauriMusic</span>
     </div>
 
@@ -168,15 +162,15 @@ const volFill = computed(() => `${player.volume * 100}%`);
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: var(--accent);
+  background: #1b1613;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .logo svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
 }
 .name {
   font-size: 13px;

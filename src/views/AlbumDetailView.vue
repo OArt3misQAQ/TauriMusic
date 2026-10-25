@@ -223,4 +223,32 @@ h1 {
   color: var(--danger);
   border: 1px solid var(--danger);
 }
+
+/* 手机:封面居中、标题居中,只保留播放/随机两个主行动 */
+:root.mobile .detail-head {
+  display: block;
+  margin-bottom: 16px;
+}
+:root.mobile .detail-head .cover {
+  width: min(52vw, 220px);
+  height: min(52vw, 220px);
+  margin: 0 auto 14px;
+}
+:root.mobile .detail-head .meta-col {
+  text-align: center;
+}
+:root.mobile .detail-head .artist {
+  margin-left: auto;
+  margin-right: auto;
+}
+:root.mobile h1 {
+  font-size: 23px;
+}
+:root.mobile .btns {
+  justify-content: center;
+  margin-top: 12px;
+}
+:root.mobile .btns .ghost-pill:not(:nth-child(2)) {
+  display: none;
+}
 </style>

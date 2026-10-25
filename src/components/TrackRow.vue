@@ -90,6 +90,14 @@ function onRowKey(e: KeyboardEvent): void {
         <path d="M10 11v5M14 11v5" />
       </svg>
     </button>
+    <!-- 触屏没有 hover:行尾更多键打开与右键相同的操作菜单 -->
+    <button class="more" title="更多操作" aria-label="更多操作" @click.stop="emit('rowMenu', $event)">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="5" cy="12" r="1.8" />
+        <circle cx="12" cy="12" r="1.8" />
+        <circle cx="19" cy="12" r="1.8" />
+      </svg>
+    </button>
     <span class="dur">{{ fmtTime(track.duration) }}</span>
   </div>
 </template>
@@ -300,6 +308,35 @@ function onRowKey(e: KeyboardEvent): void {
   font-size: 12px;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
+}
+
+.more {
+  display: none;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}
+.more svg {
+  width: 16px;
+  height: 16px;
+}
+.more:active {
+  background: var(--hover);
+}
+/* 触屏:隐藏悬停才出现的导出/删除,收进更多菜单;专辑列让位给歌名 */
+:root.mobile .exp,
+:root.mobile .del {
+  display: none;
+}
+:root.mobile .more {
+  display: flex;
+}
+:root.mobile .al {
+  display: none;
 }
 
 /* 多选状态 */

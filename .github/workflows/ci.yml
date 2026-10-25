@@ -72,3 +72,44 @@ jobs:
         run: npm run lint
       - name: 类型检查与构建
         run: npm run build
+
+  android:
+    name: Android (debug APK, arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 安装 Android SDK 37 与 NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      # Android 配置虽然清空了 bundle.resources,构建脚本仍会校验默认配置里的 ffmpeg 路径
+      - name: ffmpeg 资源占位
+        run: mkdir -p src-tauri/resources && touch src-tauri/resources/ffmpeg.exe
+      - name: 构建 Android 调试 APK
+        run: npm run tauri -- android build --debug --target aarch64
+      # debug APK 体积较大:只在 main 推送时保留 3 天,PR 只验证能构建
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: tauri-music-android-arm64-debug
+          path: src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
+          retention-days: 3

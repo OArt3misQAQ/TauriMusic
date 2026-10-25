@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- 启动窗口底色:与新应用图标「墨夜赤胶」的墨底一致 -->
+    <color name="splash_bg">#FF1B1613</color>
 </resources>

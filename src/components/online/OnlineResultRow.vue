@@ -211,4 +211,11 @@ function rowMenu(e: MouseEvent): void {
     transform: rotate(360deg);
   }
 }
+
+/* 触屏没有 hover:保存按钮常驻,否则手机上根本点不到 */
+:root.mobile .ov-row .row-save {
+  opacity: 1;
+  visibility: visible;
+  margin-right: 4px;
+}
 </style>

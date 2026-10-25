@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
 import { ctx, closeCtx } from "../stores/context";
+import { isMobile } from "../platform";
 
 function run(index: number): void {
   const item = ctx.items?.[index];
@@ -33,7 +34,12 @@ onUnmounted(() => {
   window.removeEventListener("click", onDocClick);
 });
 
-const style = computed(() => ({ left: `${ctx.x}px`, top: `${ctx.y}px` }));
+/** 手机改成底部操作卡片,不再按触点浮层;桌面保持原位右键菜单 */
+const style = computed(() =>
+  isMobile
+    ? { left: "0", right: "0", bottom: "0", top: "auto" }
+    : { left: `${ctx.x}px`, top: `${ctx.y}px` },
+);
 </script>
 
 <template>
@@ -151,5 +157,30 @@ html.dark.glass .menu {
 }
 .ctx-leave-to {
   opacity: 0;
+}
+
+/* 手机:贴底操作卡片,盖住 Tab 栏并让开手势条,行高按触屏放大 */
+:root.mobile .menu {
+  min-width: 0;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 8px 8px calc(8px + var(--tm-safe-bottom, 0px));
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.3);
+}
+:root.mobile .item {
+  height: 48px;
+  padding: 0 14px;
+  gap: 12px;
+  border-radius: 12px;
+  font-size: 15px;
+}
+:root.mobile .item svg {
+  width: 18px;
+  height: 18px;
+}
+:root.mobile .ctx-enter-from,
+:root.mobile .ctx-leave-to {
+  transform: translateY(20px);
 }
 </style>

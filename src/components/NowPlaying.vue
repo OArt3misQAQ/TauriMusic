@@ -325,8 +325,21 @@ watch(
   overflow: hidden;
   color: var(--np-fg);
   background: var(--np-bg);
-  /* 顶栏悬浮在最上层(z-100):为它预留 48px,标题/封面/歌词不再钻到顶栏底下 */
-  padding-top: 48px;
+  /* 顶栏悬浮在最上层(z-100):为它预留 48px,标题/封面/歌词不再钻到顶栏底下;
+     移动端再加系统状态栏高度(Android 由 MainActivity 注入 CSS 变量) */
+  padding-top: calc(48px + var(--tm-safe-top, 0px));
+}
+/* 手机没有桌面顶栏:播放页从状态栏下开始,收起键与队列抽屉贴安全区 */
+:root.mobile .np {
+  padding-top: var(--tm-safe-top, 0px);
+}
+:root.mobile .np .corner {
+  top: calc(10px + var(--tm-safe-top, 0px));
+  left: 12px;
+  right: auto;
+}
+:root.mobile .np .queue {
+  top: var(--tm-safe-top, 0px);
 }
 .np::before {
   content: "";
@@ -343,7 +356,7 @@ watch(
    不参与底部三区控制行的布局——开关归开关,传输归传输 */
 .corner {
   position: absolute;
-  top: 60px;
+  top: calc(60px + var(--tm-safe-top, 0px));
   right: 18px;
   z-index: 5;
   display: flex;
@@ -510,7 +523,7 @@ watch(
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 10px 0 26px;
+  padding: 10px 0 calc(26px + var(--tm-safe-bottom, 0px));
 }
 /* 控制行:与进度条同宽同列——左(模式键)/中(播放控制)/右(队列)三区分布,
    不再被 stretch 拉到窗口两角;窄窗口时左右区让位给中间的控制组 */
@@ -612,7 +625,7 @@ watch(
   position: absolute;
   /* 顶栏(z-100)悬浮在播放页之上,绝对定位不受 .np 的 padding-top 约束,
      top:0 会钻进顶栏 48px 区被音量滑杆/窗口按钮压住——与顶栏收口线对齐从 48px 起 */
-  top: 48px;
+  top: calc(48px + var(--tm-safe-top, 0px));
   right: 0;
   bottom: 0;
   z-index: 6; /* 高于右上角的收起按钮,抽屉自带关闭键 */
@@ -679,7 +692,7 @@ html.glass .np .queue::after {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 10px 16px;
+  padding: 0 10px calc(16px + var(--tm-safe-bottom, 0px));
   scrollbar-width: none;
 }
 .q-body::-webkit-scrollbar {
@@ -904,5 +917,114 @@ html[data-skin="paper"] .np .q-remove:hover {
 }
 html[data-skin="paper"] .np .q-remove:hover {
   color: var(--danger);
+}
+
+/* ===== 手机竖屏:桌面双栏(封面 + 歌词)改为上下堆叠 =====
+   封面按 vw/vh 取小值保证正方形,矮屏自动缩小给歌词留空间 */
+@media (max-width: 860px) {
+  .stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 20px 4px;
+    min-height: 0;
+  }
+  .art {
+    flex: none;
+    width: min(58vw, 260px, 30vh);
+    height: min(58vw, 260px, 30vh);
+    border-radius: 10px;
+  }
+  .info {
+    position: static;
+    width: 100%;
+    max-width: none;
+    padding: 0 8px;
+    text-align: center;
+  }
+  .info .title {
+    font-size: 19px;
+  }
+  .info .artist {
+    font-size: 12.5px;
+  }
+  .lyrics-wrap {
+    width: 100%;
+    flex: 1;
+    min-height: 96px;
+  }
+  .lyrics {
+    padding: 26% 6px;
+  }
+  .lyrics.synced p {
+    font-size: 17px;
+    padding: 5px 0;
+  }
+  .lyrics.synced p .trans {
+    font-size: 12.5px;
+  }
+  .lyrics.plain p {
+    font-size: 14px;
+  }
+  .bottom {
+    width: 100%;
+    padding: 8px 0 calc(16px + var(--tm-safe-bottom, 0px));
+  }
+  .controls {
+    width: 100%;
+    max-width: none;
+    padding: 0 22px;
+  }
+  .zone.mid {
+    gap: 18px;
+  }
+  .zone.mid .t-btn svg {
+    width: 24px;
+    height: 24px;
+  }
+  .zone.mid .t-btn.play svg {
+    width: 38px;
+    height: 38px;
+  }
+  .seek {
+    width: 100%;
+    max-width: none;
+    padding: 0 22px;
+  }
+  .close {
+    width: 40px;
+    height: 40px;
+  }
+  /* 队列抽屉盖住右上角动作列:抽屉自带关闭键,直接收起动作列 */
+  :root .np.queue-open .corner {
+    display: none;
+  }
+  .queue {
+    width: min(86vw, 380px);
+    max-width: none;
+  }
+}
+
+/* 手机播放页从底部滑入/滑出,替代桌面的缩放+模糊(整页模糊在 WebView 上很贵) */
+:root.mobile .np-enter-active {
+  transition:
+    transform 0.32s var(--ease-out-soft),
+    opacity 0.24s ease;
+}
+:root.mobile .np-leave-active {
+  transition:
+    transform 0.28s var(--ease-out-soft),
+    opacity 0.2s ease;
+}
+:root.mobile .np-enter-from {
+  opacity: 1;
+  transform: translateY(100%);
+  filter: none;
+}
+:root.mobile .np-leave-to {
+  opacity: 1;
+  transform: translateY(100%);
+  filter: none;
 }
 </style>

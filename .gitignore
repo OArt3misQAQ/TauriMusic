@@ -64,3 +64,6 @@ src-tauri/resources/ffmpeg.exe
 html/
 
 *.gitignore
+
+# Kotlin 编译器本地缓存(gen/android 下的 .gitignore 本身不入库)
+src-tauri/gen/android/.kotlin/

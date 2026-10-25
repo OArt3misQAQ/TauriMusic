@@ -35,6 +35,52 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TauriMusic ${{ github.ref_name }}"
-          releaseBody: "Windows 安装包:NSIS(setup.exe)与 MSI 二选一安装。完整变更见对应提交。"
+          releaseBody: "Windows:NSIS(setup.exe)与 MSI 二选一安装。Android:arm64 调试 APK(debug 签名,可直接侧载)。完整变更见对应提交。"
           releaseDraft: false
           prerelease: false
+
+  android:
+    name: 构建 Android APK 并附加到 Release
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 安装 Android SDK 37 与 NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - name: ffmpeg 资源占位
+        run: mkdir -p src-tauri/resources && touch src-tauri/resources/ffmpeg.exe
+      # 先出 debug 签名 APK:无需仓库 secret 即可直接安装。
+      # 需要正式签名时,把 release 构建接到 Gradle signingConfig/keystore secrets。
+      - name: 构建 Android 调试 APK
+        run: npm run tauri -- android build --debug --target aarch64
+      - name: 附加 APK 到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist-android
+          cp src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk \
+            "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk"
+          gh release upload "${GITHUB_REF_NAME}" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk" --clobber

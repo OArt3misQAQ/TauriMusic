@@ -199,6 +199,97 @@ fn take_pending_imports(state: tauri::State<AppState>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Android 系统分享收件箱里的一条音频(由 MainActivity 复制内容 URI 后落盘)
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedAudio {
+    path: String,
+    name: String,
+}
+
+/// 分享收件箱:cache/shared-inbox。Kotlin 侧每复制完一首就写一份同名 .json 说明,
+/// 用"一文件一说明"而不是共享队列文件,读写两端无需加锁也不会互相覆盖
+fn shared_inbox_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("shared-inbox")
+}
+
+/// 与扫描器直放格式保持一致:移动端没有 ffmpeg,转码格式分享进来也扫不到,
+/// 提前丢弃避免把用户文件搬进曲库目录后变成"看不见的垃圾"
+fn is_shared_audio(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            scanner::EXTENSIONS
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(e))
+        })
+        .unwrap_or(false)
+}
+
+/// 读走收件箱说明文件并返回可用条目。条目指向收件箱外的路径一律丢弃:
+/// 说明文件虽然是本应用写的,但缓存目录可被其他调试工具改写,不能当可信输入
+fn take_shared_audio_entries(cache_dir: &Path) -> Vec<SharedAudio> {
+    let inbox = shared_inbox_dir(cache_dir);
+    let Ok(entries) = fs::read_dir(&inbox) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let sidecar = entry.path();
+        if sidecar.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let parsed = fs::read_to_string(&sidecar)
+            .ok()
+            .and_then(|text| serde_json::from_str::<SharedAudio>(&text).ok());
+        // 说明文件一次性消费:解析失败也删,避免每次轮询都卡在坏文件上
+        let _ = fs::remove_file(&sidecar);
+        let Some(item) = parsed else { continue };
+        let path = PathBuf::from(&item.path);
+        if !path.starts_with(&inbox) || !path.is_file() || !is_shared_audio(&path) {
+            continue;
+        }
+        out.push(item);
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// 缓存目录在进程内恒定:前端每 3s 轮询一次,不必每次都走 path 插件
+fn shared_cache_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(dir) = CACHE.get() {
+        return Some(dir.clone());
+    }
+    let dir = app.path().app_cache_dir().ok()?;
+    let _ = CACHE.set(dir.clone());
+    Some(dir)
+}
+
+/// 拉取系统分享来的音频:返回本地缓存路径,前端走既有导入管线入库并播放
+#[tauri::command]
+fn take_shared_audio(app: tauri::AppHandle) -> Vec<SharedAudio> {
+    match shared_cache_dir(&app) {
+        Some(cache) => take_shared_audio_entries(&cache),
+        None => Vec::new(),
+    }
+}
+
+/// 导入完成后删除分享缓存副本:曲库已有一份,缓存不必再占空间
+#[tauri::command]
+fn discard_shared_audio(paths: Vec<String>, app: tauri::AppHandle) {
+    let Some(cache) = shared_cache_dir(&app) else {
+        return;
+    };
+    let inbox = shared_inbox_dir(&cache);
+    for raw in paths {
+        let path = PathBuf::from(raw);
+        if path.starts_with(&inbox) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// 显示桌面歌词小窗(常驻窗口,启动即创建;显示/隐藏状态由前端记忆)。
 /// 移动端无多窗口,前端不应调到这里;保底返回成功避免 UI 报错
 #[tauri::command]
@@ -1056,6 +1147,8 @@ pub fn run() {
             inspect_package,
             discard_preview,
             take_pending_imports,
+            take_shared_audio,
+            discard_shared_audio,
             show_lyrics_window,
             hide_lyrics_window,
             pick_tmc_file,
@@ -1131,6 +1224,59 @@ mod tests {
         assert_eq!(panic_message(&*s), "静态文本");
         assert_eq!(panic_message(&*t), "动态文本");
         assert_eq!(panic_message(&*n), "未知 panic");
+    }
+
+    #[test]
+    fn shared_inbox_only_takes_audio_inside_inbox() {
+        use super::{shared_inbox_dir, take_shared_audio_entries};
+        // 说明文件与音频都放在收件箱内才收;指向箱外、扩展名不支持、JSON 损坏的
+        // 一律丢弃且说明文件要删掉(否则轮询永远卡在同一批坏文件上)
+        let cache = std::env::temp_dir().join(format!("tm-share-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cache);
+        let inbox = shared_inbox_dir(&cache);
+        fs::create_dir_all(&inbox).unwrap();
+
+        let good = inbox.join("1-song.mp3");
+        fs::write(&good, b"fake-audio").unwrap();
+        let good_json = inbox.join("1-song.mp3.json");
+        fs::write(
+            &good_json,
+            serde_json::json!({ "path": good.to_string_lossy(), "name": "song.mp3" }).to_string(),
+        )
+        .unwrap();
+
+        let outside = cache.join("outside.mp3");
+        fs::write(&outside, b"fake-audio").unwrap();
+        let outside_json = inbox.join("outside.json");
+        fs::write(
+            &outside_json,
+            serde_json::json!({ "path": outside.to_string_lossy(), "name": "outside.mp3" })
+                .to_string(),
+        )
+        .unwrap();
+
+        let image = inbox.join("cover.png");
+        fs::write(&image, b"not-audio").unwrap();
+        let image_json = inbox.join("cover.png.json");
+        fs::write(
+            &image_json,
+            serde_json::json!({ "path": image.to_string_lossy(), "name": "cover.png" }).to_string(),
+        )
+        .unwrap();
+
+        let broken_json = inbox.join("broken.json");
+        fs::write(&broken_json, b"{not json").unwrap();
+
+        let got = take_shared_audio_entries(&cache);
+        assert_eq!(got.len(), 1, "只应接受收件箱内的音频");
+        assert_eq!(got[0].path, good.to_string_lossy());
+        assert_eq!(got[0].name, "song.mp3");
+        assert!(!good_json.exists(), "说明文件应一次性消费");
+        assert!(!outside_json.exists(), "箱外条目的说明文件同样要清掉");
+        assert!(!image_json.exists(), "非音频条目的说明文件要清掉");
+        assert!(!broken_json.exists(), "损坏的说明文件要清掉");
+        assert!(outside.exists(), "箱外文件不能被误删");
+        let _ = fs::remove_dir_all(&cache);
     }
 
     #[test]

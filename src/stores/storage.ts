@@ -7,6 +7,8 @@ export const StorageKeys = {
   theme: `${PREFIX}theme`,
   skin: `${PREFIX}skin`,
   mode: `${PREFIX}mode`,
+  /** 手机端界面性能模式:"smooth" 流畅 / "rich" 精致(完整玻璃与动效) */
+  perf: `${PREFIX}perf`,
   /** 听歌统计总开关("0"=关闭):只管偏好,数据本体在 Rust 端 stats.json */
   stats: `${PREFIX}stats`,
 } as const;

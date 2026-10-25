@@ -1,5 +1,6 @@
 import { ref, watch } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   player,
   current,
@@ -12,6 +13,7 @@ import {
   onlineCovers,
 } from "./player";
 import { api, type LyricLine } from "../api";
+import { isMobile } from "../platform";
 
 /**
  * Windows 系统媒体控制(SMTC)、托盘迷你面板的状态桥:
@@ -103,6 +105,12 @@ let stopWatches: (() => void)[] = [];
 export function initMediaBridge(): void {
   if (bridgeInited) return; // 与 initTheme/initSkin 同理:重挂载/HMR 时监听器不能叠加
   bridgeInited = true;
+  // 手机没有托盘/桌面歌词窗口:SMTC 推送、media:// 广播和歌词窗口的额外取词
+  // 全是白跑,直接只留系统媒体卡片(WebView 支持时)
+  if (isMobile) {
+    initAndroidMediaSession(stopWatches);
+    return;
+  }
   // listen 返回的是 Promise,反注册函数到手后归集,供 HMR dispose 统一摘除
   const keepUnlisten = (un: () => void) => unlisteners.push(un);
   // 托盘面板/系统控制中心的按钮 → 播放器动作
@@ -202,6 +210,65 @@ export function initMediaBridge(): void {
           broadcast();
         }
       },
+    ),
+  );
+
+}
+
+/** 移动端媒体卡片:元数据与播放状态随播放器变化,控制按钮接回既有动作 */
+function initAndroidMediaSession(stopWatches: (() => void)[]): void {
+  if (!("mediaSession" in navigator)) return;
+  const session = navigator.mediaSession;
+  const bind = (action: MediaSessionAction, handler: MediaSessionActionHandler): void => {
+    // 不支持的动作在部分 WebView 上会抛异常,逐个兜住
+    try {
+      session.setActionHandler(action, handler);
+    } catch {
+      /* 该动作不被当前 WebView 支持 */
+    }
+  };
+
+  bind("play", () => {
+    if (!player.playing) toggle();
+  });
+  bind("pause", () => {
+    if (player.playing) toggle();
+  });
+  bind("nexttrack", () => next());
+  bind("previoustrack", () => prev());
+  bind("seekto", (details) => {
+    if (typeof details.seekTime === "number") seek(details.seekTime);
+  });
+
+  const update = (): void => {
+    const t = current.value;
+    if (!t) {
+      session.metadata = null;
+      session.playbackState = "none";
+      return;
+    }
+    const cover = coverPathOf(t);
+    try {
+      session.metadata = new MediaMetadata({
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        artwork: cover ? [{ src: convertFileSrc(cover) }] : [],
+      });
+    } catch {
+      /* 个别 WebView 无 MediaMetadata 构造器:不显示元数据即可 */
+    }
+    session.playbackState = player.playing ? "playing" : "paused";
+  };
+
+  stopWatches.push(
+    watch(() => `${current.value?.id ?? ""}|${player.playing}`, update, { immediate: true }),
+  );
+  // 在线封面异步落盘后补一次,通知栏封面从占位变成真实图
+  stopWatches.push(
+    watch(
+      () => (current.value ? onlineCovers.get(current.value.id) : undefined),
+      update,
     ),
   );
 }

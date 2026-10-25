@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import Modal from "./Modal.vue";
+import BrandMark from "./BrandMark.vue";
 import { AUTHOR_MAIL } from "../constants";
 import { ui } from "../stores/ui";
 import { api, type ResourceUsage } from "../api";
@@ -97,14 +98,7 @@ async function copyMail(): Promise<void> {
       </header>
 
       <div class="hero">
-        <span class="logo">
-          <svg viewBox="0 0 24 24">
-            <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
-            <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-            <circle cx="12" cy="12" r="3.4" fill="#fff" />
-            <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-          </svg>
-        </span>
+        <span class="logo"><BrandMark /></span>
         <div>
           <div class="name">TauriMusic</div>
           <div class="ver">版本 {{ version }}</div>
@@ -206,7 +200,7 @@ async function copyMail(): Promise<void> {
   width: 52px;
   height: 52px;
   border-radius: 13px;
-  background: var(--accent);
+  background: #1b1613;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Sidebar from "./components/Sidebar.vue";
 import TopBar from "./components/TopBar.vue";
+import MobileTabBar from "./components/MobileTabBar.vue";
+import MobilePlayerBar from "./components/MobilePlayerBar.vue";
+import MobileLibraryBar from "./components/MobileLibraryBar.vue";
 import TrayPopup from "./components/TrayPopup.vue";
 import LyricsWidget from "./components/LyricsWidget.vue";
 import ContextMenu from "./components/ContextMenu.vue";
@@ -15,14 +18,15 @@ import ArtistsView from "./views/ArtistsView.vue";
 import SongsView from "./views/SongsView.vue";
 import SearchView from "./views/SearchView.vue";
 import OnlineView from "./views/OnlineView.vue";
-import { ui, initTheme, initSkin, initWelcome } from "./stores/ui";
-import { exportState, importPreview, initLibrary, initDragImport } from "./stores/library";
+import { ui, initTheme, initSkin, initWelcome, go } from "./stores/ui";
+import { lib, exportState, importPreview, initLibrary, initDragImport, rescan } from "./stores/library";
 import { api } from "./api";
 import { initShortcuts } from "./stores/shortcuts";
 import { initStats } from "./stores/stats";
 import { initMediaBridge } from "./stores/media";
-import { current, playerFlash, coverPathOf } from "./stores/player";
+import { current, playerFlash, coverPathOf, flash, playTracks } from "./stores/player";
 import { nameDialog, picker } from "./stores/playlists";
+import { isMobile } from "./platform";
 
 // 低频视图与弹窗拆异步 chunk:首屏只带曲库/播放主链路。本地 chunk 毫秒级加载,
 // 不挂 loading 占位避免布局闪动;与 <Transition mode="out-in"> + <component :is> 兼容
@@ -36,6 +40,7 @@ const ImportPreviewModal = defineAsyncComponent(() => import("./components/Impor
 const StatsView = defineAsyncComponent(() => import("./views/StatsView.vue"));
 const SettingsView = defineAsyncComponent(() => import("./views/SettingsView.vue"));
 const TrashView = defineAsyncComponent(() => import("./views/TrashView.vue"));
+const MobileMineView = defineAsyncComponent(() => import("./views/MobileMineView.vue"));
 
 const views = {
   albums: AlbumsView,
@@ -49,9 +54,22 @@ const views = {
   stats: StatsView,
   settings: SettingsView,
   trash: TrashView,
+  mine: MobileMineView,
 } as const;
 
 const view = computed(() => views[ui.view]);
+
+/** 手机资料库 Tab 的子页:顶部显示搜索 + 歌曲/专辑/艺人/歌单切换 */
+const LIBRARY_VIEWS: ReadonlySet<string> = new Set([
+  "songs",
+  "albums",
+  "artists",
+  "playlists",
+  "search",
+]);
+const isLibraryTab = computed(
+  () => isMobile && LIBRARY_VIEWS.has(ui.view) && !(ui.view === "artists" && ui.artist),
+);
 /* 视图或其参数变化都重新触发页面过渡 */
 const pageKey = computed(
   () => `${ui.view}|${ui.albumKey ?? ""}|${ui.artist ?? ""}|${ui.playlistId ?? ""}`,
@@ -88,9 +106,27 @@ const ambientImg = computed(() => {
 });
 const ambientKey = computed(() => current.value?.id ?? "none");
 
+/* 移动端系统栏图标明暗:播放页(玻璃皮肤)恒为深色页面,其余跟随应用主题。
+   必须先取状态再碰 JS 桥:桥注入晚于首帧,若先读桥并短路,watchEffect 会
+   一个依赖都收不到,之后切播放页也不会重算 */
+type BarsBridge = {
+  setDark?: (dark: boolean) => void;
+  setImmersive?: (on: boolean) => void;
+};
+function syncSystemBars(): void {
+  const dark = ui.dark || (ui.nowPlayingOpen && !!current.value && ui.skin === "glass");
+  const bridge = (window as Window & { TauriMusicBars?: BarsBridge }).TauriMusicBars;
+  bridge?.setDark?.(dark);
+  // 全屏播放页隐藏系统导航栏,避免深色页底下露出白条
+  bridge?.setImmersive?.(ui.nowPlayingOpen && !!current.value);
+}
+watchEffect(syncSystemBars);
+
 // 指针驱动的"液态光斑":玻璃面板的高光跟随光标流动(rAF 节流,仅玻璃模式更新)
 let pointerRaf = 0;
 function onPointerMove(e: PointerEvent): void {
+  // 触屏没有光标,光斑跟随既无意义又会在滚动时反复重绘玻璃
+  if (isMobile || ui.perfMode === "smooth") return;
   if (pointerRaf) return;
   pointerRaf = requestAnimationFrame(() => {
     pointerRaf = 0;
@@ -105,6 +141,99 @@ function onPointerMove(e: PointerEvent): void {
 const isTrayPopup = getCurrentWindow().label === "tray";
 /** 桌面歌词小窗:同第三窗口,只渲染小窗自身 */
 const isLyricsWidget = getCurrentWindow().label === "lyrics";
+
+/* ===== Android:系统分享接收与返回键 ===== */
+type TmWindow = Window & { __tmBack?: () => boolean };
+// 收件箱是很轻的本地命令,但没必要高频轮询:3s 兼顾分享响应与功耗
+const SHARE_POLL_MS = 3000;
+let shareTimer = 0;
+let shareBusy = false;
+
+/** 分享来的音频:复制进曲库目录 → 扫描 → 直接播第一首。
+ *  收件箱是一音频一说明,这里是唯一消费方;导入后删缓存副本 */
+async function intakeSharedAudio(): Promise<void> {
+  if (shareBusy || document.visibilityState !== "visible") return;
+  const items = await api.takeSharedAudio().catch(() => []);
+  if (items.length === 0) return;
+  shareBusy = true;
+  try {
+    flash(`正在导入分享的 ${items.length} 首音乐…`);
+    const before = new Set(lib.tracks.map((t) => t.id));
+    const report = await api.importPaths(items.map((i) => i.path));
+    await rescan();
+    const added = lib.tracks.filter((t) => !before.has(t.id));
+    if (added.length > 0) {
+      playTracks(added, 0);
+      ui.view = "songs";
+      ui.nowPlayingOpen = true;
+      flash(`已导入并播放: ${added[0].title}`);
+    } else {
+      flash(report.duplicates > 0 ? "这首歌已在曲库中" : "没有可导入的音频");
+    }
+  } catch (err) {
+    console.error("分享导入失败", err);
+    flash("分享的音乐导入失败");
+  } finally {
+    await api.discardSharedAudio(items.map((i) => i.path)).catch(() => {});
+    shareBusy = false;
+  }
+}
+
+function startShareInbox(): void {
+  if (shareTimer) return;
+  shareTimer = window.setInterval(() => void intakeSharedAudio(), SHARE_POLL_MS);
+  document.addEventListener("visibilitychange", intakeSharedAudio);
+  window.addEventListener("focus", intakeSharedAudio);
+  void intakeSharedAudio();
+}
+
+/** Android 返回键:先收播放页/弹窗/抽屉,再退到在线音乐首页,首页才真正退出 */
+function onAndroidBack(): boolean {
+  // 首次使用声明必须读完,不响应返回键
+  if (ui.welcomeOpen) return true;
+  if (ui.aboutOpen) {
+    ui.aboutOpen = false;
+    return true;
+  }
+  if (ui.nowPlayingOpen) {
+    ui.nowPlayingOpen = false;
+    return true;
+  }
+  if (nameDialog.open) {
+    nameDialog.open = false;
+    return true;
+  }
+  if (picker.trackIds) {
+    picker.trackIds = null;
+    return true;
+  }
+  if (ui.view === "search") {
+    ui.search = "";
+    go("songs");
+    return true;
+  }
+  if (ui.view === "album") {
+    go("albums");
+    return true;
+  }
+  if (ui.view === "playlist") {
+    go("playlists");
+    return true;
+  }
+  if (ui.view === "artists" && ui.artist) {
+    ui.artist = null;
+    return true;
+  }
+  if (ui.view === "settings" || ui.view === "stats" || ui.view === "trash") {
+    go("mine");
+    return true;
+  }
+  if (ui.view !== "online") {
+    go("online");
+    return true;
+  }
+  return false;
+}
 
 onMounted(() => {
   // 主题与皮肤令牌两个窗口都需要(托盘面板靠同一份 localStorage 对齐外观)
@@ -125,14 +254,31 @@ onMounted(() => {
   initWelcome();
   initStats();
   initMediaBridge();
-  void initLibrary();
-  void initDragImport();
-  initShortcuts();
-  window.addEventListener("pointermove", onPointerMove, { passive: true });
+  if (isMobile) {
+    // 返回键先问前端(见 MainActivity),分享收件箱等曲库就绪后再开轮询,
+    // 避免启动扫描与分享导入同时改曲库
+    (window as TmWindow).__tmBack = onAndroidBack;
+    // JS 桥注入晚于首帧:启动即深色主题时补一次系统栏明暗
+    window.setTimeout(syncSystemBars, 1200);
+    void initLibrary().then(startShareInbox);
+  } else {
+    // 桌面专属:拖拽导入与全局键盘快捷键;手机没有拖拽/物理键盘入口
+    initShortcuts();
+    void initDragImport();
+    void initLibrary();
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+  }
 });
 onUnmounted(() => {
   window.removeEventListener("pointermove", onPointerMove);
   cancelAnimationFrame(pointerRaf);
+  if (isMobile) {
+    delete (window as TmWindow).__tmBack;
+    window.clearInterval(shareTimer);
+    shareTimer = 0;
+    document.removeEventListener("visibilitychange", intakeSharedAudio);
+    window.removeEventListener("focus", intakeSharedAudio);
+  }
 });
 </script>
 
@@ -166,13 +312,23 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
     </div>
 
     <div class="shell">
-      <TopBar />
-      <Sidebar />
+      <!-- 桌面保留顶栏 + 侧栏;手机改用底部 Tab,不再有桌面式铬层 -->
+      <TopBar v-if="!isMobile" />
+      <Sidebar v-if="!isMobile" />
       <main ref="contentEl" class="content">
-        <Transition name="page" mode="out-in" @enter="focusViewTitle">
-          <component :is="view" :key="pageKey" />
-        </Transition>
+        <MobileLibraryBar v-if="isLibraryTab" />
+        <div class="view-host">
+          <Transition name="page" mode="out-in" @enter="focusViewTitle">
+            <component :is="view" :key="pageKey" />
+          </Transition>
+        </div>
       </main>
+      <template v-if="isMobile && !ui.nowPlayingOpen">
+        <Transition name="mini">
+          <MobilePlayerBar v-if="current" />
+        </Transition>
+        <MobileTabBar />
+      </template>
     </div>
 
     <Transition name="np">
@@ -221,7 +377,7 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
 .flash-bar {
   position: fixed;
   left: 50%;
-  bottom: 26px;
+  bottom: calc(26px + var(--tm-safe-bottom, 0px));
   transform: translateX(-50%);
   z-index: 300;
   max-width: min(78vw, 420px);
@@ -262,6 +418,12 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
   /* 顶栏与侧栏共用的连续铬底,内容区以圆角纸面浮于其上(macOS 式) */
   background: var(--bg-2);
 }
+/* Android edge-to-edge:系统注入的状态栏/手势条高度(桌面恒为 0)。
+   :root 提权压过全局 html.glass .shell 的 padding:0 */
+:root .shell {
+  padding-top: var(--tm-safe-top, 0px);
+  padding-bottom: var(--tm-safe-bottom, 0px);
+}
 .content {
   position: relative;
   overflow: hidden;
@@ -271,6 +433,39 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
   box-shadow:
     -1px -1px 0 var(--hairline),
     -8px -4px 20px rgba(0, 0, 0, 0.05);
+}
+
+/* 视图宿主:桌面与手机都让页面填满内容区 */
+.view-host {
+  height: 100%;
+  min-height: 0;
+}
+
+/* ===== 手机壳层:内容直达状态栏,底部 Tab + 迷你播放条 =====
+   用 html.mobile 而非宽度断点:横屏变宽也不退回桌面双栏。
+   :root.mobile 提权压过上面的 :root .shell 安全区 padding */
+:root.mobile .shell {
+  display: flex;
+  flex-direction: column;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+:root.mobile .content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--tm-safe-top, 0px);
+  border-top-left-radius: 0;
+  box-shadow: none;
+}
+:root.mobile .view-host {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+:root.mobile .flash-bar {
+  bottom: calc(128px + var(--tm-safe-bottom, 0px));
 }
 .fx-defs {
   position: absolute;
@@ -352,5 +547,43 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
 }
 .modal-enter-from :deep(.modal) {
   transform: translateY(16px) scale(0.965);
+}
+
+/* ===== 手机转场:轻量位移 + 淡入,不再整页模糊/缩放 ===== */
+:root.mobile .page-enter-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s var(--ease-out-soft);
+}
+:root.mobile .page-leave-active {
+  transition: opacity 0.14s ease;
+}
+:root.mobile .page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+  filter: none;
+}
+:root.mobile .page-leave-to {
+  opacity: 0;
+  filter: none;
+}
+:root.mobile .modal-enter-active :deep(.modal) {
+  transition: transform 0.28s var(--ease-out-soft);
+}
+:root.mobile .modal-enter-from :deep(.modal) {
+  transform: translateY(12px) scale(0.98);
+}
+.mini-enter-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s var(--ease-out-soft);
+}
+.mini-leave-active {
+  transition: opacity 0.12s ease;
+}
+.mini-enter-from,
+.mini-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
 }
 </style>

@@ -165,4 +165,13 @@ const cards = computed(() =>
   font-size: 12px;
   color: var(--text-2);
 }
+
+/* 手机:分类由顶部胶囊承担,隐藏重复标题,新建按钮留在右侧 */
+:root.mobile .view-head h1 {
+  display: none;
+}
+:root.mobile .view-head {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
 </style>

@@ -1,6 +1,6 @@
 # TauriMusic
 
-参考 Apple Music 设计语言的本地音乐播放器,基于 **Rust + Tauri 2 + Vue 3** 构建,并内置网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐免费曲目在线试听。桌面端打包 Windows,另有基于 Tauri 2 移动支持的 **Android 版本**(曲库 / 本地播放 / 在线试听可用;托盘、桌面歌词、文件关联等桌面形态能力不适用)。
+参考 Apple Music 设计语言的本地音乐播放器,基于 **Rust + Tauri 2 + Vue 3** 构建,并内置网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐免费曲目在线试听。桌面端打包 Windows,另有基于 Tauri 2 移动支持的 **Android 版本**:以在线音乐为主入口、不提供主动导入,本地曲目通过系统「分享」或「用 TauriMusic 打开」进入;托盘、桌面歌词、文件关联等桌面形态能力不适用。
 
 ![TauriMusic](https://img.shields.io/badge/Tauri-2-24C8D8) ![Rust](https://img.shields.io/badge/Rust-stable-DEA584) ![Vue](https://img.shields.io/badge/Vue-3-42B883)
 
@@ -23,6 +23,7 @@
 - **在线音乐试听(四音源)**:侧边栏「在线音乐」入口——可切换 网易云 / QQ 音乐 / 酷狗音乐 / 酷我音乐,关键词搜索单曲、分页加载;免费曲目点击即播,播放直链**懒取**(进队列不请求、真正开播才取并缓存,避免链接过期),播放页/氛围背景/托盘唱机/SMTC 同步显示在线封面;VIP/需购买/版权受限曲目不做任何解锁,置灰提示并自动跳下一曲。搜索、取链与歌词/封面抓取全部在 Rust 端完成(前端 CSP 不直连外网);在线曲目 id 以 `net:` / `qq:` / `kugou:` / `kuwo:` 前缀与本地路径 hash 空间隔离,不入曲库持久化。播放直链与封面图在交给 WebView 前都经过对应平台官方 https 域名白名单校验,CSP 也只放行这些域名;酷我接口对 VIP 也会返回直链,因此只允许本次会话搜索结果中 `PAY=0` 的曲目取链。QQ/酷狗提供在线歌词与封面,酷我首版仅播放(封面占位、无歌词)
 - **在线音质**:固定取各平台**免费给到匿名听众的上限**,页面不设档位选择——网易云 `br=320000`(该曲没有 320k 源时接口自动降级)、酷狗优先走搜索结果里的 `HQFileHash`(320k,且仅 `HQPrivilege` 判免费才用),QQ 与酷我匿名最高就是 128k,按 128k 取,不去试探任何付费文件。酷狗 HQ 被接口拒绝时自动回落 128k,高音质是上限而非硬性条件
 - **在线曲目保存到本地库**:免费曲目行尾「下载」按钮把正在试听的那份文件存进导入目录——取链(与播放同一道闸)、下载、写入标题/艺人/专辑标签与内嵌封面、同名 `.lrc` 旁路歌词,再复用既有散装导入管线完成复制归位、全量扫描与 SHA-256 内容指纹判重(反复保存同一首不会堆重复文件),入库后与本地曲目完全同级。容器扩展名按直链推导(mp3/m4a/flac),标签写入失败不致命,文件名「艺人 - 标题」仍可被扫描器解析
+- **Android 版(在线为主 + 系统分享打开)**:启动直接进「在线音乐」,四音源搜索、试听、保存与统计与桌面同源;不提供文件夹扫描/主动导入——在任意 App 或文件管理器里把音频「分享」给 TauriMusic(或选「用 TauriMusic 打开」)即复制进应用曲库、扫描并直接播放。手机端是独立布局而非桌面缩小版:底部 **在线 / 资料库 / 我的** 三 Tab、Tab 上方常驻迷你播放条、点开全屏播放器(进入时隐藏系统导航栏);资料库顶部有搜索与歌曲/专辑/艺人/歌单切换,触屏行用 ⋯ 打开底部操作卡片。已适配 edge-to-edge 安全区、竖屏播放页与返回键,状态栏图标明暗随页面切换;设置 → 性能与动效可在「流畅 / 精致」间切换(默认流畅:关闭全屏模糊、封面氛围与玻璃光斑,转场更轻;精致保留完整玻璃与动效,低端机可能掉帧)。应用图标为「墨夜赤胶」(深墨底 + 赤红黑胶 + 播放三角),冷启动先用同色品牌底避免闪白
 - **听歌统计(本地/在线分域)**:统计页可切换「本地 / 在线」两套口径,各自展示总览(累计/今日/本周时长、播放次数、歌曲数)、最近 30 天柱状图、最常听歌手/专辑/歌曲榜与最近播放;按「听满半曲或 4 分钟」计一次播放。设置 → 统计与隐私提供总开关——关闭后**停止收集并隐藏统计页**;数据仅保存在本机 `stats.json`,**绝不联网上传**,可一键清除
 - **深浅色外观**:默认跟随系统,可手动切换
 - **液态玻璃外观**:专辑封面驱动的氛围背景(深度模糊 + 缓慢漂移、随曲目切换淡入淡出),停靠式磨砂玻璃面板(边缘透镜折射 + 跟随光标流动的高光),可一键开关
@@ -57,19 +58,34 @@ npm run tauri dev  # 开发模式运行(桌面)
 
 要求:Node.js ≥ 20.19、Rust stable、WebView2(Windows 11 自带)。
 
-Android 开发:需 Android SDK + NDK(r27+)、JDK 17,并安装 Rust 的 `aarch64-linux-android` / `x86_64-linux-android` 等目标;`ANDROID_HOME`、`NDK_HOME`、`JAVA_HOME` 就绪后,`src-tauri/gen/android` 内已含 Gradle 工程(`tauri android init` 生成)。
+Android 开发:需 Android SDK + NDK(r27+)、JDK 17,并安装 Rust 的 `aarch64-linux-android` / `x86_64-linux-android` 等目标;`ANDROID_HOME`、`NDK_HOME`、`JAVA_HOME` 就绪后,`src-tauri/gen/android` 内已含 Gradle 工程(`tauri android init` 生成)。移动端界面按 UA 在 `src/platform.ts` 判定(默认在线音乐、隐藏桌面专属入口);系统分享音频由 `MainActivity` 收到后复制到 `cache/shared-inbox`,Rust 命令 `take_shared_audio` 消费并走既有导入管线,前端轮询到即扫描并开播。
 
 ## 构建
 
+> `npm run build` 只构建前端；`npm run tauri build` / `npm run build:windows` 只构建**桌面**安装包；Android 必须走 `android build`。
+
+| 目标 | 命令 | 产物位置 |
+| --- | --- | --- |
+| Windows 安装包 | `npm run build:windows` | `src-tauri/target/release/bundle/`（msi / nsis） |
+| Android Release（全 ABI） | `npm run build:android` | `src-tauri/gen/android/app/build/outputs/apk/` 与 `bundle/`（AAB）；首次需配置签名 |
+| Android 真机调试 | `npm run build:android:phone` | `src-tauri/gen/android/app/build/outputs/apk/arm64/debug/` |
+| Android 模拟器调试 | `npm run build:android:emulator` | `src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/` |
+
 ```bash
-npm run tauri build             # 产出安装包(msi / nsis)
-npm run tauri build -- --no-bundle  # 仅产出绿色版 exe
-npm run tauri android build --debug --target x86_64   # Android 模拟器调试 APK(真机用 aarch64)
+npm run build:windows                 # 桌面安装包
+npm run build:android                 # Android 发布包(默认全部 ABI,较慢)
+npm run tauri -- android build --split-per-abi   # 按 ABI 拆 APK/AAB
+npm run build:android:phone           # 真机调试 APK(arm64)
+npm run build:android:emulator        # 模拟器调试 APK(x86_64)
 ```
 
-产物位于 `src-tauri/target/release/tauri-music.exe`;Android APK 在 `src-tauri/gen/android/app/build/outputs/apk/`。推送 `v*` tag 到 GitHub 会自动构建安装包并发布 Release。
+Android 输出**不在** `src-tauri/target/release` 下,而在 `src-tauri/gen/android/app/build/outputs/`;桌面绿色版 exe 在 `src-tauri/target/release/tauri-music.exe`。推送 `v*` tag 会同时构建 Windows 安装包与 **Android arm64 调试 APK**(debug 签名,可直接侧载),APK 自动附加到 Release;CI(`.github/workflows/ci.yml`)也会在 push/PR 上构建 Android APK 验证编译。
 
-> Windows 上未开启开发者模式时,tauri CLI 无法把 `.so` 符号链接进 jniLibs:可开启系统「开发者模式」,或先 `cargo build` 再把 `target/<三元组>/debug/libtauri_music_lib.so` 复制到 `gen/android/app/src/main/jniLibs/<abi>/`、`dist/` 复制到 `gen/android/app/src/main/assets/`,然后直接调 `gen/android` 里的 `gradlew assembleX86_64Debug`。
+“全平台”无法只靠一台机器的一套工具链完成:Windows/Android 可在 Windows 或 Linux 上构建,macOS/iOS 需要 macOS + Xcode;通常用 GitHub Actions 的多 OS matrix（`windows-latest` / `ubuntu-latest` / `macos-latest`）分别构建。当前 CI/Release 已覆盖 Windows 与 Android(arm64);Android Release 目前是 **debug 签名 APK**,可在任意设备直接安装。要发布正式签名包/上架应用商店,需要配置 keystore 并把 Android job 改为 `release` 构建 + Gradle signingConfig(或用 CI secrets 解码 keystore)。
+
+> Windows 上未开启开发者模式时,tauri CLI 无法把 `.so` 符号链接进 jniLibs:可开启系统「开发者模式」,或手动打包——先执行 `npm run tauri -- android build --debug --target x86_64`(它会先完成 Rust 编译,随后在符号链接处失败),把 `target/<三元组>/debug/libtauri_music_lib.so` 复制到 `gen/android/app/src/main/jniLibs/<abi>/`,再在 `gen/android` 里执行 `./gradlew assembleX86_64Debug -x rustBuildX86_64Debug`。必须跳过 Gradle 的 Rust 任务:它会调用 `tauri android android-studio-script`,依赖 `tauri android build` 常驻的 CLI options server,单独跑 Gradle 时必然失败。
+>
+> **前端资源是编译期嵌进 `libtauri_music_lib.so` 的**,不是运行时读 APK 里的 `assets/`:改完前端必须重新编译 Android 目标(上面那条 CLI 命令即便最后失败也已重编),只替换 `gen/android/app/src/main/assets/` 不会生效——表现为页面一直加载旧 bundle。
 
 ## 测试与代码质量
 
@@ -105,6 +121,7 @@ cargo run --example make_beyond_tmc -- <输入目录> <输出目录> [过滤词]
 ```
 src/                    # Vue 3 前端
   api.ts                #   Tauri command 封装与类型
+  platform.ts           #   运行平台判定(Android 走移动端 UI 与分享收件箱)
   stores/               #   ui / library / player / playlists / shortcuts / context / storage / stats / media
   components/           #   顶栏、侧边栏、全屏播放页、曲目列表、弹窗、右键菜单等
   views/                #   专辑 / 专辑详情 / 艺人 / 歌曲 / 搜索 / 在线音乐 / 播放列表 / 歌单详情 / 听歌统计 / 回收站
@@ -122,7 +139,7 @@ src-tauri/
   src/playlists.rs      #   用户歌单 CRUD 实现与条目快照/命名助手
   src/assoc.rs          #   文件关联与开机自启动(HKCU 注册表,用户级;桌面专属)
   src/media.rs          #   系统媒体控制(SMTC)+ 托盘播放控制菜单(桌面专属)
-  gen/android/          #   Android Gradle 工程(tauri android init 生成,含 MainActivity 调试开关)
+  gen/android/          #   Android Gradle 工程(tauri android init 生成;MainActivity 负责分享 Intent、返回键与安全区注入)
   examples/make_fixture.rs      # 示例曲库生成器
   examples/make_tmc.rs          # TMC 演示包生成 + 解包/网易云调试工具
   examples/make_beyond_tmc.rs   # 批量音频打包 TMC(元数据自动补齐)
@@ -141,7 +158,7 @@ TauriMusic-promo/       # 宣传素材
 
 删除这两个目录即可完全重置应用。
 
-Android 端路径随系统走应用私有目录:曲库/统计/回收站与导入目录(`Music/`)在应用内部存储 `/data/user/0/com.art3mis.taurimusic/`,封面缓存在应用缓存目录 `covers/`;卸载应用即全部清除。
+Android 端路径随系统走应用私有目录:曲库/统计/回收站与导入目录(`Music/`)在应用内部存储 `/data/user/0/com.art3mis.taurimusic/`,封面缓存在应用缓存目录 `covers/`;系统分享来的音频先落在 `cache/shared-inbox/`,导入完成后即删除。卸载应用即全部清除。
 
 ## 许可
 

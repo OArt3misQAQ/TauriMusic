@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import BrandMark from "./BrandMark.vue";
 
 /** 托盘右键的迷你播放面板(独立 WebView 窗口):
  *  播放状态由主窗口经 media://state 事件广播,按钮动作 emit 回主窗口执行;
@@ -101,13 +102,7 @@ onUnmounted(() => {
   <div class="tray-card">
     <!-- 铭牌行:器材丝印风格的小字距大写,右侧呼吸灯只在播放时亮起 -->
     <header class="t-head">
-      <span class="t-logo">
-        <svg viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-          <circle cx="12" cy="12" r="3.4" fill="#fff" />
-          <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-        </svg>
-      </span>
+      <span class="t-logo"><BrandMark /></span>
       <span class="t-name">TauriMusic</span>
       <Transition name="lamp">
         <span v-if="state.playing" class="t-live" title="正在播放"></span>
@@ -215,15 +210,15 @@ onUnmounted(() => {
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  background: var(--accent);
+  background: #1b1613;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 .t-logo svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 .t-name {
   /* 与主窗口顶栏同款品牌字:自然大小写、中等字重、微字距——

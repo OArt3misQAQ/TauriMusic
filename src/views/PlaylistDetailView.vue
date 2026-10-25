@@ -159,7 +159,7 @@ function rowMenu(e: MouseEvent, index: number): void {
         <div class="btns">
           <button class="pill pill--accent primary-pill" :disabled="!playable.length" @click="playAll">播放</button>
           <button class="pill ghost-pill" :disabled="!playable.length" @click="shuffleAll">随机播放</button>
-          <button class="pill ghost-pill" title="导出为 TMCL(7z:音乐文件+playlist.json)" @click="exportPlaylist(pl)">
+          <button class="pill ghost-pill export-pl" title="导出为 TMCL(7z:音乐文件+playlist.json)" @click="exportPlaylist(pl)">
             导出 TMCL
           </button>
           <button class="pill ghost-pill" @click="askRenamePlaylist(pl)">重命名</button>
@@ -177,7 +177,7 @@ function rowMenu(e: MouseEvent, index: number): void {
 
     <div v-if="pl.entries.length === 0" class="empty">
       <h2>列表还是空的</h2>
-      <p>在歌曲/专辑/搜索结果里右键选“添加到播放列表”,或勾选多首后点“加入歌单”</p>
+      <p>在歌曲/专辑/搜索结果里把歌加入这个歌单</p>
     </div>
 
     <div v-else class="rows">
@@ -220,6 +220,13 @@ function rowMenu(e: MouseEvent, index: number): void {
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="m6 9.5 6 6 6-6" />
+            </svg>
+          </button>
+          <button class="op more-op" title="更多操作" aria-label="更多操作" @click="rowMenu($event, r.index)">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="5" cy="12" r="1.8" />
+              <circle cx="12" cy="12" r="1.8" />
+              <circle cx="19" cy="12" r="1.8" />
             </svg>
           </button>
           <!-- 移除只走右键菜单:行内 × 悬停浮现后位置固定,删一行行上移,
@@ -456,5 +463,43 @@ function rowMenu(e: MouseEvent, index: number): void {
 .op svg {
   width: 14px;
   height: 14px;
+}
+.more-op {
+  display: none;
+}
+
+/* 手机:封面/标题居中,只保留播放与随机;行内上下移与移除收进更多菜单 */
+:root.mobile .detail-head {
+  display: block;
+  margin-bottom: 14px;
+}
+:root.mobile .detail-head .cover {
+  width: min(52vw, 220px);
+  height: min(52vw, 220px);
+  margin: 0 auto 14px;
+}
+:root.mobile .meta-col {
+  text-align: center;
+}
+:root.mobile .detail-head h1 {
+  font-size: 24px;
+}
+:root.mobile .btns {
+  justify-content: center;
+}
+:root.mobile .export-pl {
+  display: none;
+}
+:root.mobile .row .al {
+  display: none;
+}
+:root.mobile .row .ops {
+  opacity: 1;
+}
+:root.mobile .row .ops .op:not(.more-op) {
+  display: none;
+}
+:root.mobile .row .ops .more-op {
+  display: flex;
 }
 </style>

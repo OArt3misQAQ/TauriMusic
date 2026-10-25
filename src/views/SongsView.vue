@@ -3,6 +3,7 @@ import { allSongs, lib, enrichAllNetease } from "../stores/library";
 import { shuffleList } from "../stores/player";
 import TrackList from "../components/TrackList.vue";
 import LibGate from "../components/LibGate.vue";
+import { isMobile } from "../platform";
 
 /** 全库随机播放:队列 = 全部歌曲洗牌,不打断正在播的歌 */
 function shuffleAll(): void {
@@ -20,9 +21,15 @@ function shuffleAll(): void {
         <div class="right">
           <span class="count">{{ allSongs.length }} 首</span>
           <button class="pill match-btn ghost" :disabled="allSongs.length === 0" @click="shuffleAll">
-            随机播放全部
+            {{ isMobile ? "随机播放" : "随机播放全部" }}
           </button>
-          <button class="pill pill--accent match-btn" :disabled="lib.matching" @click="enrichAllNetease">
+          <!-- 全库在线匹配是桌面维护动作,手机端不占首屏 -->
+          <button
+            v-if="!isMobile"
+            class="pill pill--accent match-btn"
+            :disabled="lib.matching"
+            @click="enrichAllNetease"
+          >
             {{ lib.matching ? "匹配中…" : "全部在线匹配" }}
           </button>
         </div>
@@ -76,5 +83,14 @@ function shuffleAll(): void {
 .match-btn:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* 手机:分类由顶部胶囊承担,隐藏重复的"歌曲"大标题,只留计数与随机播放 */
+:root.mobile .view-head h1 {
+  display: none;
+}
+:root.mobile .view-head {
+  justify-content: flex-end;
+  margin-bottom: 10px;
 }
 </style>

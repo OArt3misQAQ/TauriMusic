@@ -1,6 +1,7 @@
 import { ref, reactive, watchEffect, effectScope } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { StorageKeys, storageGetString, storageRemove, storageSet } from "./storage";
+import { isMobile } from "../platform";
 
 export type ViewName =
   | "albums"
@@ -13,11 +14,14 @@ export type ViewName =
   | "playlist"
   | "stats"
   | "settings"
-  | "trash";
+  | "trash"
+  | "mine";
 /** 皮肤模式:跟随系统 / 浅色 / 黑色 */
 export type ThemeMode = "system" | "light" | "dark";
 /** 界面材质皮肤:液态玻璃(默认)/ 纸质 */
 export type Skin = "glass" | "paper";
+/** 手机端性能模式:流畅(默认,关重滤镜)/ 精致(完整玻璃与动效) */
+export type PerfMode = "smooth" | "rich";
 
 interface UiState {
   view: ViewName;
@@ -41,10 +45,19 @@ interface UiState {
   welcomeOpen: boolean;
   /** 关于弹窗 */
   aboutOpen: boolean;
+  /** 手机端性能模式(桌面始终按精致渲染) */
+  perfMode: PerfMode;
 }
 
+// 首帧前先挂上流畅类,避免先按重滤镜绘制一帧再退化
+const savedPerf = storageGetString(StorageKeys.perf, "");
+const initialPerf: PerfMode =
+  savedPerf === "smooth" || savedPerf === "rich" ? savedPerf : isMobile ? "smooth" : "rich";
+document.documentElement.classList.toggle("perf-smooth", initialPerf === "smooth");
+
 export const ui = reactive<UiState>({
-  view: "albums",
+  // 手机版以在线音乐为主入口;本地曲目只经系统分享进入,不再把空曲库摆在首屏
+  view: isMobile ? "online" : "albums",
   albumKey: null,
   artist: null,
   playlistId: null,
@@ -55,6 +68,7 @@ export const ui = reactive<UiState>({
   nowPlayingOpen: false,
   welcomeOpen: false,
   aboutOpen: false,
+  perfMode: initialPerf,
 });
 
 const systemDark = ref(false);
@@ -165,15 +179,17 @@ export function initTheme(): void {
       ui.dark = ui.themeMode === "dark" || (ui.themeMode === "system" && systemDark.value);
       document.documentElement.classList.toggle("dark", ui.dark);
       // 原生窗口边框/标题区颜色同步;"跟随系统"交还给系统。
-      // setTheme 是异步的,移动端无窗口主题概念,rejection 也要接住
-      try {
-        void getCurrentWindow()
-          .setTheme(ui.themeMode === "system" ? null : ui.themeMode)
-          .catch(() => {
-            /* Android 无窗口主题概念,失败静默 */
-          });
-      } catch {
-        /* 浏览器调试环境无窗口 */
+      // Android 没有窗口主题概念,跳过这次 IPC
+      if (!isMobile) {
+        try {
+          void getCurrentWindow()
+            .setTheme(ui.themeMode === "system" ? null : ui.themeMode)
+            .catch(() => {
+              /* 浏览器调试环境无窗口 */
+            });
+        } catch {
+          /* 浏览器调试环境无窗口 */
+        }
       }
     });
   });
@@ -183,6 +199,13 @@ export function initTheme(): void {
 export function setSkin(skin: Skin): void {
   ui.skin = skin;
   storageSet(StorageKeys.skin, skin);
+}
+
+/** 手机端性能模式:流畅关掉重滤镜与氛围背景,精致保留完整玻璃与动效 */
+export function setPerfMode(mode: PerfMode): void {
+  ui.perfMode = mode;
+  storageSet(StorageKeys.perf, mode);
+  document.documentElement.classList.toggle("perf-smooth", mode === "smooth");
 }
 
 let skinInited = false;

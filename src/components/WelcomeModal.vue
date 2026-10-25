@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import Modal from "./Modal.vue";
+import BrandMark from "./BrandMark.vue";
 import { acceptWelcome } from "../stores/ui";
 import { api } from "../api";
 import { AUTHOR_MAIL } from "../constants";
+import { isMobile } from "../platform";
 
 /** 三步引导:1 使用声明 → 2 感谢信 → 3 初始设置(自启动与音乐包关联,默认全部不勾) */
 const step = ref<1 | 2 | 3>(1);
@@ -11,17 +13,23 @@ const wantAutostart = ref(false);
 const wantPackAssoc = ref(false);
 const applying = ref(false);
 
+/* 两项初始设置都是桌面形态(注册表自启动/文件关联),移动端整段跳过 */
+const showSetup = computed(() => !isMobile);
+
 async function finishWelcome(): Promise<void> {
   applying.value = true;
   try {
-    await api.setAutostart(wantAutostart.value);
-    // 安装包默认注册了音乐包关联;用户不勾选时逐项摘除(音频格式的关联保持不变)
-    if (!wantPackAssoc.value) {
-      for (const ext of ["tmc", "tmcl", "tmca"]) {
-        try {
-          await api.setAssociation(ext, false);
-        } catch (err) {
-          console.error(`摘除 .${ext} 关联失败`, err);
+    // 移动端没有自启动/文件关联,直接完成引导
+    if (showSetup.value) {
+      await api.setAutostart(wantAutostart.value);
+      // 安装包默认注册了音乐包关联;用户不勾选时逐项摘除(音频格式的关联保持不变)
+      if (!wantPackAssoc.value) {
+        for (const ext of ["tmc", "tmcl", "tmca"]) {
+          try {
+            await api.setAssociation(ext, false);
+          } catch (err) {
+            console.error(`摘除 .${ext} 关联失败`, err);
+          }
         }
       }
     }
@@ -31,6 +39,12 @@ async function finishWelcome(): Promise<void> {
   applying.value = false;
   acceptWelcome();
 }
+
+/** 手机只有两步:感谢信页直接完成,不进空的"初始设置" */
+function nextFromLetter(): void {
+  if (showSetup.value) step.value = 3;
+  else void finishWelcome();
+}
 </script>
 
 <template>
@@ -39,14 +53,7 @@ async function finishWelcome(): Promise<void> {
       <!-- 第一步:使用声明 -->
       <div v-if="step === 1" key="terms">
         <header class="head">
-          <span class="logo">
-            <svg viewBox="0 0 24 24">
-              <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
-              <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-              <circle cx="12" cy="12" r="3.4" fill="#fff" />
-              <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-            </svg>
-          </span>
+          <span class="logo"><BrandMark /></span>
           <div>
             <h2>欢迎使用 TauriMusic</h2>
             <p class="sub">首次使用前,请阅读以下使用声明</p>
@@ -78,14 +85,7 @@ async function finishWelcome(): Promise<void> {
       <!-- 第二步:感谢信 -->
       <div v-else-if="step === 2" key="letter" class="letter-wrap">
         <header class="head letter-head">
-          <span class="logo">
-            <svg viewBox="0 0 24 24">
-              <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
-              <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-              <circle cx="12" cy="12" r="3.4" fill="#fff" />
-              <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-            </svg>
-          </span>
+          <span class="logo"><BrandMark /></span>
           <div>
             <h2>一封感谢信</h2>
             <p class="sub">来自开发者</p>
@@ -106,25 +106,20 @@ async function finishWelcome(): Promise<void> {
           </div>
         </div>
 
-        <button class="cta" @click="step = 3">继续</button>
+        <button class="cta" :disabled="applying" @click="nextFromLetter">
+          {{ applying ? "正在完成…" : showSetup ? "继续" : "开始使用" }}
+        </button>
       </div>
       <div v-else key="setup" class="setup-wrap">
         <header class="head">
-          <span class="logo">
-            <svg viewBox="0 0 24 24">
-              <!-- 迷你黑胶:与应用图标「墨夜胶片」同一几何语言,中孔透出陶土底色 -->
-              <circle cx="12" cy="12" r="8.6" fill="none" stroke="#fff" stroke-width="2" />
-              <circle cx="12" cy="12" r="3.4" fill="#fff" />
-              <circle cx="12" cy="12" r="1.2" style="fill: var(--accent)" />
-            </svg>
-          </span>
+          <span class="logo"><BrandMark /></span>
           <div>
             <h2>初始设置</h2>
-            <p class="sub">两项可选项,以后随时能在设置里更改</p>
+            <p class="sub">{{ showSetup ? "两项可选项,以后随时能在设置里更改" : "以后随时能在设置里更改" }}</p>
           </div>
         </header>
 
-        <div class="setup">
+        <div v-if="showSetup" class="setup">
           <label class="opt-row">
             <input v-model="wantAutostart" type="checkbox" />
             <span class="opt-text">
@@ -150,7 +145,7 @@ async function finishWelcome(): Promise<void> {
     <div class="dots">
       <span class="dot" :class="{ on: step === 1 }"></span>
       <span class="dot" :class="{ on: step === 2 }"></span>
-      <span class="dot" :class="{ on: step === 3 }"></span>
+      <span v-if="showSetup" class="dot" :class="{ on: step === 3 }"></span>
     </div>
   </Modal>
 </template>
@@ -166,7 +161,7 @@ async function finishWelcome(): Promise<void> {
   width: 52px;
   height: 52px;
   border-radius: 13px;
-  background: var(--accent);
+  background: #1b1613;
   display: flex;
   align-items: center;
   justify-content: center;

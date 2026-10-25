@@ -33,4 +33,13 @@ const sorted = computed(() =>
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 24px 20px;
 }
+
+/* 手机:分类由顶部胶囊承担,隐藏重复标题 */
+:root.mobile .view-head h1 {
+  display: none;
+}
+:root.mobile .view-head {
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
 </style>

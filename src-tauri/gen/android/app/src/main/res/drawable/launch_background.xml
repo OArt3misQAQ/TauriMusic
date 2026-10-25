@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 冷启动底色:墨底 + 居中应用图标,避免 WebView 就绪前闪白 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_bg" />
+    <item
+        android:width="112dp"
+        android:height="112dp"
+        android:gravity="center"
+        android:drawable="@mipmap/ic_launcher" />
+</layer-list>

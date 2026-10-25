@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { ui, setThemeMode, setSkin } from "../stores/ui";
+import { ui, setThemeMode, setSkin, setPerfMode } from "../stores/ui";
 import { lib, flashStatus, openImportDir, addFolder, rescan, importTmcPick, importMusicPick } from "../stores/library";
 import { statsEnabled, setStatsEnabled, clearStats } from "../stores/stats";
 import { lyricsOn, toggleLyricsWindow } from "../stores/media";
@@ -126,7 +126,7 @@ async function clearStatsConfirmed(): Promise<void> {
 
     <div class="col">
       <!-- 通用 -->
-      <section class="sect">
+      <section v-if="!isMobile" class="sect">
         <div class="sect-head">
           <span class="tint" style="--tint: #98989d">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
@@ -237,8 +237,55 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
       </section>
 
-      <!-- 导入 -->
-      <section class="sect">
+      <!-- 手机性能与动效:默认流畅;精致模式保留完整玻璃与动效 -->
+      <section v-if="isMobile" class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #ff9f0a">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.5 18a8.5 8.5 0 1 1 15 0" />
+              <path d="m12 14 4-4" />
+              <circle cx="12" cy="14" r="1.4" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span>性能与动效</span>
+        </div>
+        <div class="group">
+          <div class="opt static">
+            <span class="label">
+              界面模式
+              <small class="sub">流畅:关闭全屏模糊、封面氛围与玻璃光斑,转场更轻,低端机更稳;精致:保留完整玻璃、氛围与动效,画面更丰富但可能掉帧</small>
+            </span>
+            <div class="seg">
+              <button :class="{ on: ui.perfMode === 'smooth' }" @click="setPerfMode('smooth')">流畅</button>
+              <button :class="{ on: ui.perfMode === 'rich' }" @click="setPerfMode('rich')">精致</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 手机版没有主动导入入口:本地曲目只从系统分享进入 -->
+      <section v-if="isMobile" class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #30d158">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="18" cy="5" r="2.6" /><circle cx="6" cy="12" r="2.6" /><circle cx="18" cy="19" r="2.6" />
+              <path d="m8.4 10.8 7.2-4.2M8.4 13.2l7.2 4.2" />
+            </svg>
+          </span>
+          <span>分享导入</span>
+        </div>
+        <div class="group">
+          <div class="opt static">
+            <span class="label">
+              从系统分享打开音乐
+              <small class="sub">在相册、文件管理器或其它音乐 App 里选择「分享」→「TauriMusic」,歌曲会导入曲库并直接播放;手机版不提供文件夹扫描与主动导入</small>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 导入(桌面) -->
+      <section v-if="!isMobile" class="sect">
         <div class="sect-head">
           <span class="tint" style="--tint: #30d158">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -284,7 +331,11 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
         <div class="group">
           <div class="opt static">
-            <span class="label">曲库规模<small class="sub">{{ lib.tracks.length }} 首歌曲 · {{ lib.folders.length }} 个文件夹 · 重新扫描以发现外部目录的变更</small></span>
+            <span class="label">
+              曲库规模
+              <small v-if="isMobile" class="sub">{{ lib.tracks.length }} 首歌曲 · 分享导入的歌曲保存在应用内部</small>
+              <small v-else class="sub">{{ lib.tracks.length }} 首歌曲 · {{ lib.folders.length }} 个文件夹 · 重新扫描以发现外部目录的变更</small>
+            </span>
             <div class="btns">
               <button class="pill pill--hover mini" :disabled="lib.scanning" @click="rescan">
                 {{ lib.scanning ? `扫描中 ${lib.scanCurrent}/${lib.scanTotal}` : "重新扫描" }}

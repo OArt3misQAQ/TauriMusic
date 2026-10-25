@@ -8,6 +8,10 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "build:windows": "tauri build",
+    "build:android": "tauri android build",
+    "build:android:phone": "tauri android build --debug --target aarch64",
+    "build:android:emulator": "tauri android build --debug --target x86_64",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
