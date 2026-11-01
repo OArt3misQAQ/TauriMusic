@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { RecycleScroller } from "vue-virtual-scroller";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { fmtTime, playTracks, shuffleList } from "../stores/player";
 import { go, openAlbum, openArtist, ui } from "../stores/ui";
 import { openCtx, type CtxItem } from "../stores/context";
-import { exportTrackTmc } from "../stores/library";
+import { exportTrackTmc, trackAlbumKey } from "../stores/library";
 import { useConfirmableAction } from "../composables/useConfirmableAction";
 import {
   askRenamePlaylist,
@@ -20,6 +21,11 @@ import {
 
 const pl = computed(() => playlistById(ui.playlistId));
 const resolved = computed(() => (pl.value ? resolvePlaylist(pl.value) : []));
+/** 虚拟滚动行:RecycleScroller 要求 items 自带唯一 key 字段
+ *  (路径+下标,同一首歌出现两行也不撞) */
+const virtualRows = computed(() =>
+  resolved.value.map((r) => ({ ...r, key: `${r.entry.path}-${r.index}` })),
+);
 const playable = computed(() => resolved.value.filter((r) => r.track).map((r) => r.track!));
 const missing = computed(() => resolved.value.filter((r) => !r.track).length);
 
@@ -92,7 +98,7 @@ function rowMenu(e: MouseEvent, index: number): void {
       {
         label: "查看专辑",
         icon: "album",
-        action: () => openAlbum(`${t.albumArtist || t.artist}\u{1}${t.album}`),
+        action: () => openAlbum(trackAlbumKey(t)),
       },
       { label: "查看艺人", icon: "artist", action: () => openArtist(t.artist) },
       { label: "加入其他歌单", icon: "playlist", action: () => openPlaylistPicker([t.id]) },
@@ -180,59 +186,63 @@ function rowMenu(e: MouseEvent, index: number): void {
       <p>在歌曲/专辑/搜索结果里把歌加入这个歌单</p>
     </div>
 
-    <div v-else class="rows">
-      <div
-        v-for="r in resolved"
-        :key="r.entry.path + '-' + r.index"
-        class="row"
-        :class="{ missing: !r.track }"
-        role="button"
-        tabindex="0"
-        @click="playRow(r.index)"
-        @contextmenu="rowMenu($event, r.index)"
-        @keydown="onRowKey($event, r.index)"
-      >
-        <span class="idx">{{ r.index + 1 }}</span>
-        <span class="cov">
-          <img v-if="r.track?.cover" :src="convertFileSrc(r.track.cover)" loading="lazy" decoding="async" alt="" />
-          <span v-else class="ph">♪</span>
-        </span>
-        <span class="main">
-          <span class="t" :title="r.track?.title ?? r.entry.title">
-            {{ r.track?.title ?? r.entry.title }}
-            <span v-if="!r.track" class="miss-tag">文件缺失</span>
-          </span>
-          <span class="a">{{ r.track?.artist ?? r.entry.artist }}</span>
-        </span>
-        <span class="al" :title="r.track?.album ?? r.entry.album">{{ r.track?.album ?? r.entry.album }}</span>
-        <span class="dur">{{ fmtTime(r.track?.duration ?? r.entry.duration) }}</span>
-        <span class="ops" @click.stop>
-          <button class="op" title="上移" :disabled="r.index === 0" @click="onMove(r.index, -1)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m6 14.5 6-6 6 6" />
-            </svg>
-          </button>
-          <button
-            class="op"
-            title="下移"
-            :disabled="r.index === pl.entries.length - 1"
-            @click="onMove(r.index, 1)"
+    <div v-else class="rows vrows">
+      <!-- TMCL 导入的大歌单轻松上千行:虚拟滚动只渲染视口内的行。
+           行高固定 56px(原 54px 行高 + 2px 间距同节距)供 RecycleScroller 定位 -->
+      <RecycleScroller :items="virtualRows" :item-size="56" key-field="key" :buffer="400">
+        <template #default="{ item: r }">
+          <div
+            class="row"
+            :class="{ missing: !r.track }"
+            role="button"
+            tabindex="0"
+            @click="playRow(r.index)"
+            @contextmenu="rowMenu($event, r.index)"
+            @keydown="onRowKey($event, r.index)"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m6 9.5 6 6 6-6" />
-            </svg>
-          </button>
-          <button class="op more-op" title="更多操作" aria-label="更多操作" @click="rowMenu($event, r.index)">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="5" cy="12" r="1.8" />
-              <circle cx="12" cy="12" r="1.8" />
-              <circle cx="19" cy="12" r="1.8" />
-            </svg>
-          </button>
-          <!-- 移除只走右键菜单:行内 × 悬停浮现后位置固定,删一行行上移,
-               × 会悬到下一首的同一位置,极易连环误删(歌单被清空事故的根源) -->
-        </span>
-      </div>
+            <span class="idx">{{ r.index + 1 }}</span>
+            <span class="cov">
+              <img v-if="r.track?.cover" :src="convertFileSrc(r.track.cover)" loading="lazy" decoding="async" alt="" />
+              <span v-else class="ph">♪</span>
+            </span>
+            <span class="main">
+              <span class="t" :title="r.track?.title ?? r.entry.title">
+                {{ r.track?.title ?? r.entry.title }}
+                <span v-if="!r.track" class="miss-tag">文件缺失</span>
+              </span>
+              <span class="a">{{ r.track?.artist ?? r.entry.artist }}</span>
+            </span>
+            <span class="al" :title="r.track?.album ?? r.entry.album">{{ r.track?.album ?? r.entry.album }}</span>
+            <span class="dur">{{ fmtTime(r.track?.duration ?? r.entry.duration) }}</span>
+            <span class="ops" @click.stop>
+              <button class="op" title="上移" :disabled="r.index === 0" @click="onMove(r.index, -1)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m6 14.5 6-6 6 6" />
+                </svg>
+              </button>
+              <button
+                class="op"
+                title="下移"
+                :disabled="r.index === pl.entries.length - 1"
+                @click="onMove(r.index, 1)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m6 9.5 6 6 6-6" />
+                </svg>
+              </button>
+              <button class="op more-op" title="更多操作" aria-label="更多操作" @click="rowMenu($event, r.index)">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.8" />
+                  <circle cx="12" cy="12" r="1.8" />
+                  <circle cx="19" cy="12" r="1.8" />
+                </svg>
+              </button>
+              <!-- 移除只走右键菜单:行内 × 悬停浮现后位置固定,删一行行上移,
+                   × 会悬到下一首的同一位置,极易连环误删(歌单被清空事故的根源) -->
+            </span>
+          </div>
+        </template>
+      </RecycleScroller>
     </div>
   </div>
 
@@ -317,23 +327,29 @@ function rowMenu(e: MouseEvent, index: number): void {
   cursor: pointer;
 }
 
-.rows {
+/* 大歌单虚拟滚动:.view 让出滚动给列表自身(列头固定,行区独立滚) */
+.view {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  overflow: hidden;
+}
+.rows {
+  flex: 1;
+  min-height: 0;
+  display: block;
+  overflow-y: auto;
 }
 .row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 7px 10px;
+  /* 定高 56px = 原 54px 行高 + 2px 行距,虚拟定位与视觉节奏两不误 */
+  height: 56px;
+  padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
   min-width: 0;
   transition: background 0.25s var(--ease-out-soft);
-  /* TMCL 导入的大歌单轻松上千行:视口外的行跳过布局与绘制 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 54px;
 }
 .row:hover {
   background: var(--hover);

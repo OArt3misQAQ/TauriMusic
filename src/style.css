@@ -1141,18 +1141,20 @@ html[data-skin="paper"].lyrics-host body::after {
   content: none;
 }
 
-/* ===== 手机流畅模式(设置 → 性能与动效) =====
-   用户在手机上可选流畅/精致:流畅模式砍掉全屏模糊、氛围背景与所有
-   backdrop-filter,铬面改实底;精致模式保留完整玻璃与氛围 */
-:root.mobile.perf-smooth .ambient {
+/* ===== 流畅模式(设置 → 性能与动效,全平台可选) =====
+   流畅模式砍掉全屏模糊、氛围背景与所有 backdrop-filter,铬面改实底;
+   精致模式保留完整玻璃与氛围。手机默认流畅、桌面默认精致,
+   低端桌面机(核显/老 GPU)同样可以一键切到流畅 */
+:root.perf-smooth .ambient {
   display: none !important;
 }
-:root.mobile.perf-smooth *,
-:root.mobile.perf-smooth *::before,
-:root.mobile.perf-smooth *::after {
+:root.perf-smooth *,
+:root.perf-smooth *::before,
+:root.perf-smooth *::after {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+/* 手机壳层专属的实底铬面(tabbar/mini 等只在手机布局出现) */
 :root.mobile.perf-smooth .tabbar,
 :root.mobile.perf-smooth .mini,
 :root.mobile.perf-smooth .lib-bar,
@@ -1162,7 +1164,8 @@ html[data-skin="paper"].lyrics-host body::after {
 :root.mobile.perf-smooth .mini-wash {
   display: none !important;
 }
-:root.mobile.perf-smooth .np::before {
+/* 播放页氛围层:filter 大模糊换成静态深色底,桌面手机同规则 */
+:root.perf-smooth .np::before {
   filter: none !important;
   transform: none !important;
   background: linear-gradient(160deg, #2c2023 0%, #1a1518 52%, #101012 100%) !important;

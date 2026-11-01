@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { RecycleScroller } from "vue-virtual-scroller";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, type LyricLine } from "../api";
 import {
@@ -16,6 +17,7 @@ import {
   coverPathOf,
 } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
+import NowPlayingSeek from "./NowPlayingSeek.vue";
 import { ui } from "../stores/ui";
 import { flash } from "../stores/player";
 import { lyricsOn, toggleLyricsWindow } from "../stores/media";
@@ -35,24 +37,11 @@ const coverUrl = computed(() => {
 const bgStyle = computed(() => ({
   "--np-cover": coverUrl.value ? `url("${coverUrl.value}")` : "none",
 }));
-const progress = computed(() =>
-  player.duration > 0 ? (seekShow.value / player.duration) * 100 : 0,
-);
-
-/* 拖动进度条:拖动中本地预览,松手(change)才真正 seek——
-   input 每 tick 都写 audio.currentTime 会造成音频抖动 */
-const seeking = ref<number | null>(null);
-const seekShow = computed(() => seeking.value ?? player.position);
-function onSeekInput(e: Event): void {
-  seeking.value = Number((e.target as HTMLInputElement).value);
-}
-function onSeekCommit(e: Event): void {
-  seek(Number((e.target as HTMLInputElement).value));
-  seeking.value = null;
-}
 
 const synced = ref<LyricLine[] | null>(null);
 const plain = ref<string | null>(null);
+/** 纯文本歌词按行拆出:避免每次渲染都重新 split 分配数组 */
+const plainLines = computed(() => plain.value?.split("\n") ?? []);
 const activeIdx = ref(-1);
 const lyricsEl = ref<HTMLElement | null>(null);
 const noLyrics = ref(false);
@@ -177,9 +166,11 @@ watch(
 
       <div class="lyrics-wrap">
         <div v-if="synced && synced.length" ref="lyricsEl" class="lyrics synced">
+          <!-- v-memo 只放行当前行±1:activeIdx 变化时几百行歌词只有 4 行进 diff -->
           <p
             v-for="(line, i) in synced"
             :key="i"
+            v-memo="[i === activeIdx, Math.abs(i - activeIdx) <= 1]"
             :class="{ active: i === activeIdx, near: Math.abs(i - activeIdx) === 1, far: Math.abs(i - activeIdx) > 1 }"
             @click="seek(line.timeMs / 1000)"
           >
@@ -187,7 +178,7 @@ watch(
           </p>
         </div>
         <div v-else-if="plain" class="lyrics plain">
-          <p v-for="(line, i) in plain.split('\n')" :key="i">{{ line }}</p>
+          <p v-for="(line, i) in plainLines" :key="i">{{ line }}</p>
         </div>
         <div v-else-if="loadingLyrics" class="lyrics none">歌词加载中…</div>
         <div v-else class="lyrics none">暂无歌词</div>
@@ -234,21 +225,8 @@ watch(
           </button>
         </div>
       </div>
-      <div class="seek">
-        <span class="time">{{ fmtTime(seekShow) }}</span>
-        <input
-          class="range"
-          type="range"
-          min="0"
-          :max="player.duration || 1"
-          step="0.1"
-          :value="seekShow"
-          :style="{ '--fill': progress + '%' }"
-          @input="onSeekInput"
-          @change="onSeekCommit"
-        />
-        <span class="time">{{ fmtTime(player.duration) }}</span>
-      </div>
+      <!-- 进度条独立组件:timeupdate 不再驱动本组件重渲 -->
+      <NowPlayingSeek />
     </div>
 
     <!-- 播放队列抽屉:本轮循环的真实播放顺序;点行切歌,悬停移除(不删文件) -->
@@ -270,24 +248,30 @@ watch(
             <span class="q-dur">{{ fmtTime(player.duration) }}</span>
           </div>
           <div class="q-sep">接下来</div>
-          <TransitionGroup name="qlist" tag="div" class="q-list">
-            <div
-              v-for="(item, i) in queueList"
-              :key="item.queueIndex"
-              class="q-row"
-              @click="jumpToQueueIndex(item.queueIndex)"
-            >
-              <span class="q-idx">{{ i + 1 }}</span>
-              <span class="q-meta">
-                <span class="q-t">{{ item.track.title }}</span>
-                <span class="q-a">{{ item.track.artist }}</span>
-              </span>
-              <span class="q-dur">{{ fmtTime(item.track.duration) }}</span>
-              <button class="q-remove" title="从队列移除" @click.stop="removeFromQueue(item.queueIndex)">
-                <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
-              </button>
-            </div>
-          </TransitionGroup>
+          <!-- 虚拟滚动:「随机播放全部」时队列是全库几千首,TransitionGroup 的
+               FLIP 补位动画换成按需渲染(几千节点的每秒多次 diff 吃不消);
+               行高在 .vq 中固定 48px 供 RecycleScroller 定位 -->
+          <RecycleScroller
+            class="q-list vq"
+            :items="queueList"
+            :item-size="48"
+            key-field="queueIndex"
+            :buffer="300"
+          >
+            <template #default="{ item, index: i }">
+              <div class="q-row" @click="jumpToQueueIndex(item.queueIndex)">
+                <span class="q-idx">{{ i + 1 }}</span>
+                <span class="q-meta">
+                  <span class="q-t">{{ item.track.title }}</span>
+                  <span class="q-a">{{ item.track.artist }}</span>
+                </span>
+                <span class="q-dur">{{ fmtTime(item.track.duration) }}</span>
+                <button class="q-remove" title="从队列移除" @click.stop="removeFromQueue(item.queueIndex)">
+                  <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+                </button>
+              </div>
+            </template>
+          </RecycleScroller>
           <div v-if="!queueList.length" class="q-empty">{{ current ? "本轮播放到这里就结束啦" : "队列还是空的" }}</div>
         </div>
       </aside>
@@ -595,29 +579,8 @@ watch(
   height: 38px;
 }
 
-.seek {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 560px;
-  max-width: 90vw;
-}
-.time {
-  font-size: 11px;
-  color: var(--np-fg-soft);
-  font-variant-numeric: tabular-nums;
-  min-width: 36px;
-}
-.time:last-child {
-  text-align: right;
-}
-.seek .range {
-  flex: 1;
-  background: linear-gradient(to right, var(--np-fg) var(--fill, 0%), var(--np-track) var(--fill, 0%));
-}
-.seek .range::-webkit-slider-thumb {
-  background: var(--np-thumb);
-}
+/* .seek/.time/.range 样式已随进度条组件(NowPlayingSeek.vue)迁出;
+   皮肤变体在 style.css 末尾按 .seek/.range 类名命中,不受迁出影响 */
 
 /* ===== 播放队列抽屉:右侧滑入的本轮循环面板 =====
    材质跟随播放页:玻璃下是磨纱暗抽屉,纸质下由末尾的印刷插页规则接管 */
@@ -689,17 +652,28 @@ html.glass .np .queue::after {
   );
 }
 .q-body {
+  /* 滚动收进 .q-list(RecycleScroller 自身是滚动容器),本层只做纵向布局 */
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 10px;
+}
+.q-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 10px calc(16px + var(--tm-safe-bottom, 0px));
+  padding-bottom: calc(16px + var(--tm-safe-bottom, 0px));
   scrollbar-width: none;
 }
-.q-body::-webkit-scrollbar {
+.q-list::-webkit-scrollbar {
   display: none;
 }
-.q-list {
-  position: relative; /* 移除动画时离场行绝对定位,其余行平滑补位 */
+/* 虚拟行固定行高(含内边距),供 RecycleScroller 的 item-size 定位 */
+.q-list.vq .q-row {
+  height: 48px;
+  padding: 0 10px;
 }
 .q-row {
   display: flex;
@@ -836,23 +810,6 @@ html.glass .np .queue::after {
   transform: translateX(48px);
   opacity: 0;
 }
-.qlist-move {
-  transition: transform 0.3s var(--ease-out-soft);
-}
-.qlist-enter-active {
-  transition: opacity 0.25s ease, transform 0.3s var(--ease-out-soft);
-}
-.qlist-leave-active {
-  position: absolute;
-  width: calc(100% - 20px);
-  transition: opacity 0.2s ease, transform 0.3s var(--ease-out-soft);
-}
-.qlist-enter-from,
-.qlist-leave-to {
-  opacity: 0;
-  transform: translateX(20px);
-}
-
 /* ===== 纸质皮肤:播放页变"印刷节目单"——纸底、墨字、衬线歌词、封面装裱 ===== */
 html[data-skin="paper"] .np {
   --np-bg: var(--bg);
@@ -986,11 +943,6 @@ html[data-skin="paper"] .np .q-remove:hover {
   .zone.mid .t-btn.play svg {
     width: 38px;
     height: 38px;
-  }
-  .seek {
-    width: 100%;
-    max-width: none;
-    padding: 0 22px;
   }
   .close {
     width: 40px;

@@ -237,8 +237,8 @@ async function clearStatsConfirmed(): Promise<void> {
         </div>
       </section>
 
-      <!-- 手机性能与动效:默认流畅;精致模式保留完整玻璃与动效 -->
-      <section v-if="isMobile" class="sect">
+      <!-- 性能与动效(全平台):手机默认流畅,桌面默认精致,可随时切换 -->
+      <section class="sect">
         <div class="sect-head">
           <span class="tint" style="--tint: #ff9f0a">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -253,7 +253,7 @@ async function clearStatsConfirmed(): Promise<void> {
           <div class="opt static">
             <span class="label">
               界面模式
-              <small class="sub">流畅:关闭全屏模糊、封面氛围与玻璃光斑,转场更轻,低端机更稳;精致:保留完整玻璃、氛围与动效,画面更丰富但可能掉帧</small>
+              <small class="sub">流畅:关闭全屏模糊、封面氛围与玻璃光斑,转场更轻,低端设备更稳;精致:保留完整玻璃、氛围与动效,画面更丰富但可能掉帧</small>
             </span>
             <div class="seg">
               <button :class="{ on: ui.perfMode === 'smooth' }" @click="setPerfMode('smooth')">流畅</button>

@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { player, current, toggle, next, coverPathOf } from "../stores/player";
 import { ui } from "../stores/ui";
+import PlaybackLine from "./PlaybackLine.vue";
 
 const cover = computed(() => {
   // 迷你条只有 42px:优先 256px 缩略图,别把 512px 大图拉进内存
@@ -10,10 +11,6 @@ const cover = computed(() => {
   const p = t?.cover ?? coverPathOf(t);
   return p ? convertFileSrc(p) : null;
 });
-const progress = computed(() =>
-  player.duration > 0 ? Math.min(100, (player.position / player.duration) * 100) : 0,
-);
-
 function openPlayer(): void {
   if (current.value) ui.nowPlayingOpen = true;
 }
@@ -32,7 +29,8 @@ function openPlayer(): void {
     @keydown.space.prevent="openPlayer"
   >
     <i class="mini-wash" aria-hidden="true"></i>
-    <span class="mini-line" :style="{ width: progress + '%' }"></span>
+    <!-- 进度线独立订阅 position:迷你条其余节点不随 ~4Hz 进度重渲 -->
+    <PlaybackLine class="mini-line" />
     <span class="mini-cover">
       <img v-if="cover" :src="cover" alt="" />
       <span v-else class="ph">♪</span>

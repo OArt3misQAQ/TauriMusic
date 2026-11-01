@@ -45,7 +45,7 @@ interface UiState {
   welcomeOpen: boolean;
   /** 关于弹窗 */
   aboutOpen: boolean;
-  /** 手机端性能模式(桌面始终按精致渲染) */
+  /** 性能模式:流畅档关掉全屏模糊与玻璃重特效(手机默认流畅,桌面默认精致) */
   perfMode: PerfMode;
 }
 

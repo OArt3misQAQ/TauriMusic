@@ -124,9 +124,14 @@ watchEffect(syncSystemBars);
 
 // 指针驱动的"液态光斑":玻璃面板的高光跟随光标流动(rAF 节流,仅玻璃模式更新)
 let pointerRaf = 0;
+// 光斑的 radial-gradient 是 paint 层重绘:1px 级抖动不值得全窗重画,
+// 位移累计超过阈值才写 CSS 变量(阈值检查放在排帧之前,连 rAF 都省掉)
+let lastPx = -1e9;
+let lastPy = -1e9;
 function onPointerMove(e: PointerEvent): void {
   // 触屏没有光标,光斑跟随既无意义又会在滚动时反复重绘玻璃
   if (isMobile || ui.perfMode === "smooth") return;
+  if (Math.abs(e.clientX - lastPx) < 8 && Math.abs(e.clientY - lastPy) < 8) return;
   if (pointerRaf) return;
   pointerRaf = requestAnimationFrame(() => {
     pointerRaf = 0;
@@ -134,6 +139,8 @@ function onPointerMove(e: PointerEvent): void {
     const root = document.documentElement;
     root.style.setProperty("--pointer-x", `${e.clientX}px`);
     root.style.setProperty("--pointer-y", `${e.clientY}px`);
+    lastPx = e.clientX;
+    lastPy = e.clientY;
   });
 }
 

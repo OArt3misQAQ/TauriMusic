@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { player, current, toggle, next, prev, setVolume, coverPathOf } from "../stores/player";
 import ModeIcon from "./ModeIcon.vue";
 import BrandMark from "./BrandMark.vue";
+import PlaybackLine from "./PlaybackLine.vue";
 import { ui } from "../stores/ui";
 import { isMobile } from "../platform";
 
@@ -27,7 +28,6 @@ const coverUrl = computed(() => {
   const src = coverPathOf(current.value);
   return src ? convertFileSrc(src) : null;
 });
-const progress = computed(() => (player.duration > 0 ? (player.position / player.duration) * 100 : 0));
 const volFill = computed(() => `${player.volume * 100}%`);
 </script>
 
@@ -91,7 +91,8 @@ const volFill = computed(() => `${player.volume * 100}%`);
             <span class="p-meta"><span class="p-title muted">未在播放</span></span>
           </span>
         </Transition>
-        <span class="p-line" :style="{ width: progress + '%' }"></span>
+        <!-- 进度线独立订阅 position:顶栏其余节点不随 ~4Hz 进度重渲 -->
+        <PlaybackLine class="p-line" />
       </button>
     </div>
 
