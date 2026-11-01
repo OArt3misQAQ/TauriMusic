@@ -705,12 +705,9 @@ fn dedup_file_list(files: &mut Vec<PathBuf>) {
     });
 }
 
-/// 读取目录清单并缓存:一个目录只枚举一次,同专辑多曲目共享,
-/// 替代旧实现对每个未变化文件做 20+ 次 metadata 探测
-fn dir_listing(dir: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> DirListing {
-    if let Some(v) = cache.get(dir) {
-        return v.clone();
-    }
+/// 枚举目录里的文件清单(名称小写 + mtime):由 sidecar_mtime 经 entry 写入缓存,
+/// 一个目录只枚举一次,同专辑多曲目共享——替代旧实现对每个未变化文件做 20+ 次 metadata 探测
+fn read_dir_listing(dir: &Path) -> DirListing {
     let mut out: Vec<(String, f64)> = Vec::new();
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.filter_map(|e| e.ok()) {
@@ -731,7 +728,6 @@ fn dir_listing(dir: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> DirListi
             out.push((e.file_name().to_string_lossy().to_lowercase(), mtime));
         }
     }
-    cache.insert(dir.to_path_buf(), out.clone());
     out
 }
 
@@ -745,9 +741,14 @@ fn sidecar_mtime(path: &Path, cache: &mut HashMap<PathBuf, DirListing>) -> f64 {
     let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else {
         return 0.0;
     };
-    let listing = dir_listing(parent, cache);
+    // entry 直接借用缓存清单:命中路径不再整份 clone(万曲库增量扫一次
+    // 会克隆十几万个小字符串);miss 时 read_dir 仍在锁内,但每目录只发生一次
+    let listing = match cache.entry(parent.to_path_buf()) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(e) => e.insert(read_dir_listing(parent)),
+    };
     let mut max = 0.0f64;
-    for (name, mtime) in &listing {
+    for (name, mtime) in listing {
         // 候选判定(精确匹配,与旧探测名单一致):目录封面 base.ext / {stem}.cover.ext / {stem}.lrc
         let is_dir_cover = name
             .split_once('.')

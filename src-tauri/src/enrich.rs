@@ -379,8 +379,15 @@ pub(crate) fn netease_enrich_blocking(
         })
         .collect();
     let results: Vec<Option<(String, &'static str)>> = std::thread::scope(|scope| {
+        // 固定 worker 池:按 chunks(4) 起线程会让并发数随专辑规模无上限
+        // (500 首的专辑=125 个线程同时打网络);切成至多 8 份,按块序 join 保序
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 8);
+        let chunk_size = targets.len().div_ceil(workers);
         let handles: Vec<_> = targets
-            .chunks(4)
+            .chunks(chunk_size)
             .map(|chunk| {
                 let client = &client;
                 scope.spawn(move || {

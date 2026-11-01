@@ -544,12 +544,14 @@ pub fn search_netease(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, Stri
             return Err(format!("搜索失败(接口码 {code}),请稍后重试"));
         }
     }
-    let songs = v
+    // 借用解析:整页 30 条结果的 Value 数组深克隆后再逐条解析纯属浪费
+    let Some(songs) = v
         .get("result")
         .and_then(|r| r.get("songs"))
         .and_then(|s| s.as_array())
-        .cloned()
-        .unwrap_or_default();
+    else {
+        return Ok(Vec::new());
+    };
     Ok(songs.iter().filter_map(parse_netease_song).collect())
 }
 
@@ -747,13 +749,15 @@ pub fn search_qq(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String> {
             return Err(format!("QQ 搜索失败(接口码 {code})"));
         }
     }
-    let songs = v
+    // 借用解析:同网易云,整页结果的 Value 数组不做深克隆
+    let Some(songs) = v
         .get("data")
         .and_then(|d| d.get("song"))
         .and_then(|s| s.get("list"))
         .and_then(|l| l.as_array())
-        .cloned()
-        .unwrap_or_default();
+    else {
+        return Ok(Vec::new());
+    };
     Ok(songs.iter().filter_map(parse_qq_song).collect())
 }
 
@@ -918,12 +922,14 @@ pub fn search_kugou(keyword: &str, page: u32) -> Result<Vec<OnlineTrack>, String
         .send()
         .map_err(|e| net_err("酷狗搜索请求失败", &e))?;
     let v = api_json(resp, "酷狗搜索")?;
-    let lists = v
+    // 借用解析:同网易云,整页结果的 Value 数组不做深克隆
+    let Some(lists) = v
         .get("data")
         .and_then(|d| d.get("lists"))
         .and_then(|l| l.as_array())
-        .cloned()
-        .unwrap_or_default();
+    else {
+        return Ok(Vec::new());
+    };
     Ok(lists.iter().filter_map(parse_kugou_song).collect())
 }
 
@@ -1151,7 +1157,9 @@ fn parse_kuwo_song(v: &serde_json::Value) -> Option<OnlineTrack> {
 /// 酷我 r.s 搜索统一实现(在线搜索与本 crate 的本地匹配链共用):
 /// 返回 abslist 数组;单引号伪 JSON 先经 kuwo_fix_json 修复再解析。
 /// 两条调用链的参数分叉(client 档 / vipver / 每页条数)是历史现状,
-/// 这里只收敛代码不改变线上行为:在线搜索走 kt/30,本地匹配走 mp+vipver/10
+/// 这里只收敛代码不改变线上行为:在线搜索走 kt/30,本地匹配走 mp+vipver/10。
+/// 数组保持深克隆:本地匹配链(enrich)按原始字段(ARTIST/SONGNAME/MUSICRID)
+/// 评分选曲,借用解析要跨函数传递生命周期,为一页 10 条不值得
 pub(crate) fn kuwo_rs_search(
     client: &reqwest::blocking::Client,
     keyword: &str,

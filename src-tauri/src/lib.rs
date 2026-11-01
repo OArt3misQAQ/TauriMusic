@@ -1062,8 +1062,9 @@ pub fn run() {
             // 清理上次预览遗留的暂存目录:确认/取消时都会清理,这里兜底异常退出残留
             let _ = fs::remove_dir_all(cache_dir.join("covers").join("preview"));
             // 兜底清理异常退出残留的导出/下载暂存目录:崩溃/断电时整包音频
-            // 会永久留在系统 Temp(可能几百 MB × 多个)
-            cleanup_stale_temp_dirs();
+            // 会永久留在系统 Temp(可能几百 MB × 多个)。Temp 目录膨胀时
+            // 同步 read_dir+删除会推迟首帧,挂到阻塞线程池与窗口创建并行
+            tauri::async_runtime::spawn_blocking(cleanup_stale_temp_dirs);
             let lib = Library::load(&data_dir.join(LIBRARY_FILE));
             let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
