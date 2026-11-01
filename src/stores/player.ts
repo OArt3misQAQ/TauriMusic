@@ -3,6 +3,10 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, type OnlineSource, type Track } from "../api";
 import { StorageKeys, storageGetString, storageSet } from "./storage";
 
+// 时间格式化唯一实现在 ../fmt:托盘/歌词小窗引本模块会连带音频单例等副作用,
+// 它们直接从 fmt 取;这里再导出维持既有引用路径
+export { fmtTime } from "../fmt";
+
 /** 播放模式:互斥单选,一键循环切换 */
 export type PlayMode = "seq" | "loop" | "one" | "shuffle";
 
@@ -616,9 +620,3 @@ export function removeFromQueue(i: number): void {
   }
 }
 
-export function fmtTime(s: number): string {
-  if (!isFinite(s) || s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${String(sec).padStart(2, "0")}`;
-}

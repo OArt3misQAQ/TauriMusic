@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import BrandMark from "./BrandMark.vue";
+import { fmtTime as fmt } from "../fmt";
 
 /** 托盘右键的迷你播放面板(独立 WebView 窗口):
  *  播放状态由主窗口经 media://state 事件广播,按钮动作 emit 回主窗口执行;
@@ -52,10 +53,6 @@ function onSeekCommit(e: Event): void {
   if (state.value.duration > 0) void emit("media://action", `seek:${v}`);
 }
 
-function fmt(s: number): string {
-  const v = Number.isFinite(s) && s > 0 ? Math.floor(s) : 0;
-  return `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}`;
-}
 
 function act(a: string): void {
   void emit("media://action", a);

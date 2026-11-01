@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { ui, go, openPlaylist, type ViewName } from "../stores/ui";
+import { computed } from "vue";
+import { ui, go, openPlaylist } from "../stores/ui";
 import { lib } from "../stores/library";
 import { statsEnabled } from "../stores/stats";
 import { askCreatePlaylist, openPlaylistMenu } from "../stores/playlists";
+import { useLibrarySearch } from "../composables/useLibrarySearch";
 
 const navItems = [
   { name: "albums", label: "专辑", icon: "disc" },
@@ -17,32 +18,8 @@ function isActive(name: string): boolean {
   return ui.view === name;
 }
 
-/** 搜索前的视图:清空搜索时回到原处而不是固定落回专辑页 */
-let viewBeforeSearch: ViewName = "albums";
-/** 输入框本地状态:180ms 防抖后再更新全局 ui.search,大曲库下避免每键击全库过滤 */
-const searchInput = ref(ui.search);
-let searchTimer = 0;
-
-watch(searchInput, (v) => {
-  window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(() => {
-    if (v.trim()) {
-      if (ui.view !== "search") viewBeforeSearch = ui.view;
-      ui.view = "search";
-    } else if (ui.view === "search") {
-      ui.view = viewBeforeSearch;
-    }
-    ui.search = v;
-  }, 180);
-});
-
-// 打开专辑/艺人等入口会清空 ui.search,同步回输入框
-watch(
-  () => ui.search,
-  (v) => {
-    if (v === "" && searchInput.value !== "") searchInput.value = "";
-  },
-);
+/** 搜索框共通行为(180ms 防抖 + 进出搜索视图导航),与手机资料库栏共用 */
+const { searchInput } = useLibrarySearch("albums");
 
 const statusText = computed(() =>
   lib.scanning

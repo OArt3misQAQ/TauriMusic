@@ -1,33 +1,10 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed } from "vue";
 import { go, ui, type ViewName } from "../stores/ui";
+import { useLibrarySearch } from "../composables/useLibrarySearch";
 
-/** 搜索前的资料库子页:清空搜索后回到原处,而不是固定落回歌曲页 */
-const viewBeforeSearch = ref<ViewName>("songs");
-const searchInput = ref(ui.search);
-let searchTimer = 0;
-
-watch(searchInput, (v) => {
-  window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(() => {
-    if (v.trim()) {
-      if (ui.view !== "search") viewBeforeSearch.value = ui.view;
-      ui.view = "search";
-    } else if (ui.view === "search") {
-      ui.view = viewBeforeSearch.value;
-    }
-    ui.search = v;
-  }, 180);
-});
-
-watch(
-  () => ui.search,
-  (v) => {
-    if (v === "" && searchInput.value !== "") searchInput.value = "";
-  },
-);
-
-onUnmounted(() => window.clearTimeout(searchTimer));
+/** 搜索框共通行为(180ms 防抖 + 进出搜索视图导航),与桌面侧栏共用 */
+const { searchInput, viewBeforeSearch } = useLibrarySearch("songs");
 
 const chips = [
   { view: "songs", label: "歌曲" },

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize, PhysicalPosition } from "@tauri-apps/api/window";
+import { fmtTime } from "../fmt";
 
 /** 桌面歌词小窗(独立 WebView 窗口,常驻后台):
  *  状态/歌词由主窗口经 media://state、media://lyrics 广播,操作经 media://action 回传;
@@ -82,10 +83,6 @@ const pct = computed(() => {
   const d = state.value.duration;
   return d > 0 ? (Math.min(shownPos.value, d) / d) * 100 : 0;
 });
-function fmtTime(s: number): string {
-  const v = Number.isFinite(s) && s > 0 ? Math.floor(s) : 0;
-  return `${Math.floor(v / 60)}:${String(v % 60).padStart(2, "0")}`;
-}
 const seekingTime = computed(() => `${fmtTime(shownPos.value)} / ${fmtTime(state.value.duration)}`);
 const showSeekTime = computed(() => seeking.value || seekPreview.value !== null);
 let seekSettleTimer = 0;
