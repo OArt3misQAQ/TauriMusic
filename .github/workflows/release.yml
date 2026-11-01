@@ -5,8 +5,25 @@ on:
     tags: ["v*"]
 
 jobs:
+  create-release:
+    name: 创建 Release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 先建 Release,Windows 与 Android 两个构建 job 才能并行挂产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "TauriMusic ${GITHUB_REF_NAME}" \
+            --notes "Windows:NSIS(setup.exe)与 MSI 二选一安装。Android:arm64 APK(签名构建,可直接侧载)。完整变更见对应提交。" \
+          || gh release view "${GITHUB_REF_NAME}" --json id -q .id
+
   build:
     name: 构建并发布安装包
+    needs: create-release
     permissions:
       contents: write
     runs-on: windows-latest
@@ -21,13 +38,17 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: 下载 ffmpeg(全格式转码 sidecar,打包为资源)
+      # LGPL 构建相对 GPL 只少 x264/x265 等视频编码器;应用只用 ffmpeg 做
+      # 音频→FLAC 转码,所需音频解码器(ape/wma/wavpack/musepack…)与 flac、
+      # png/mjpeg 编解码 LGPL 全都带。固定 n9.0 稳定线,避免 master 滚动引入突变
+      - name: 下载 ffmpeg(音频转码 sidecar,打包为资源)
         run: |
-          curl -sL --retry 5 -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          curl -sL --retry 5 -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-9.0.zip
           7z e ffmpeg.zip "*/bin/ffmpeg.exe" -o"src-tauri/resources" -y
           rm ffmpeg.zip
           Test-Path src-tauri/resources/ffmpeg.exe
         shell: pwsh
+      # Release 已由 create-release 建好,tauri-action 检测到同名 tag 直接上传产物
       - name: 构建并发布(NSIS + MSI)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -35,13 +56,12 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TauriMusic ${{ github.ref_name }}"
-          releaseBody: "Windows:NSIS(setup.exe)与 MSI 二选一安装。Android:arm64 调试 APK(debug 签名,可直接侧载)。完整变更见对应提交。"
           releaseDraft: false
           prerelease: false
 
   android:
     name: 构建 Android APK 并附加到 Release
-    needs: build
+    needs: create-release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -74,10 +94,11 @@ jobs:
       - run: npm ci
       - name: ffmpeg 资源占位
         run: mkdir -p src-tauri/resources && touch src-tauri/resources/ffmpeg.exe
-      # 先出 debug 签名 APK:无需仓库 secret 即可直接安装。
-      # 需要正式签名时,把 release 构建接到 Gradle signingConfig/keystore secrets。
-      - name: 构建 Android 调试 APK
-        run: npm run tauri -- android build --debug --target aarch64
+      # release 变体(非 --debug):R8 按仓库内 proguard-tauri.pro 裁剪,
+      # 用 build.gradle.kts 里内置的固定 keystore 签名——跨版本签名一致,
+      # 用户可直接覆盖安装升级(CI 现生成的 debug key 每次都不同,必须卸载重装)
+      - name: 构建 Android APK(release)
+        run: npm run tauri -- android build --target aarch64
       - name: 附加 APK 到 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,5 +106,5 @@ jobs:
           mkdir -p dist-android
           APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)
           test -n "$APK"
-          cp "$APK" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk"
-          gh release upload "${GITHUB_REF_NAME}" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64-debug.apk" --clobber
+          cp "$APK" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64.apk"
+          gh release upload "${GITHUB_REF_NAME}" "dist-android/TauriMusic-${GITHUB_REF_NAME}-android-arm64.apk" --clobber

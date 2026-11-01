@@ -75,6 +75,9 @@ jobs:
 
   android:
     name: Android (debug APK, arm64)
+    # 只在 push 时跑:装 SDK+NDK(数 GB)加 Rust 交叉编译要 10 分钟以上,
+    # PR 场景只验证"能编译"不值得每次全量跑;签名 release 构建由 release.yml 负责
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

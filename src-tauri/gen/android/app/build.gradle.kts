@@ -25,6 +25,17 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        create("release") {
+            // 仓库内置的固定 keystore(免 secret):侧载分发没有服务器凭据可泄,
+            // 公开密钥不构成额外风险;换来的是跨 release 签名一致,
+            // 用户可直接覆盖安装升级(CI 现生成的 debug key 每次都不同)
+            storeFile = file("tm-release.keystore")
+            storePassword = "taurimusic"
+            keyAlias = "taurimusic"
+            keyPassword = "taurimusic"
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
@@ -39,6 +50,9 @@ android {
             }
         }
         getByName("release") {
+            // 挂固定签名:release 变体此前从未发布过(历史版本一直是 debug 签名),
+            // 首次上线签名构建后,后续版本即可互相覆盖安装
+            signingConfig = signingConfigs.getByName("release")
             optimization {
                enable = true
             }
