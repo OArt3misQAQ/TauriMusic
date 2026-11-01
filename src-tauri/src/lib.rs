@@ -13,6 +13,7 @@ mod scanner;
 #[cfg(desktop)]
 mod single_instance;
 mod stats;
+mod storage;
 mod trash;
 
 use model::Library;
@@ -87,7 +88,13 @@ pub(crate) fn toggle_main(app: &tauri::AppHandle) {
 
 pub struct AppState {
     pub lib: Mutex<Library>,
+    /// 数据根:曲库/音乐/封面/回收站都在这里。可经设置迁移(重启后生效),
+    /// 启动时由 storage.json 引导文件决定,默认是系统数据目录
     pub data_dir: PathBuf,
+    /// 系统默认数据目录(引导文件所在处,也是迁移的「恢复默认」目标)
+    pub default_data_dir: PathBuf,
+    /// 系统缓存目录:只剩 Android 分享收件箱(shared-inbox)在用,
+    /// 封面缓存已随数据根走
     pub cache_dir: PathBuf,
     /// 扫描重入闸:同一时刻只允许一次全量扫描
     pub scan_gate: Mutex<()>,
@@ -116,7 +123,8 @@ pub(crate) fn lock_scan_gate(state: &AppState) -> MutexGuard<'_, ()> {
 /// 被投毒的前端无法再借封面/音频通道探测任意本地文件。
 pub(crate) fn refresh_asset_scope(app: &tauri::AppHandle) {
     let scope = app.asset_protocol_scope();
-    let _ = scope.allow_directory(app.state::<AppState>().cache_dir.join("covers"), true);
+    // 封面缓存随数据根走(可迁移),分享收件箱等仍在系统缓存目录
+    let _ = scope.allow_directory(app.state::<AppState>().data_dir.join("covers"), true);
     if let Ok(lib) = app.state::<AppState>().lib.lock() {
         for folder in &lib.folders {
             let _ = scope.allow_directory(folder, true);
@@ -128,6 +136,65 @@ pub(crate) fn refresh_asset_scope(app: &tauri::AppHandle) {
 fn get_import_dir(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     let dir = ensure_import_dir(&app, &state)?;
     Ok(dir.to_string_lossy().into_owned())
+}
+
+// ===== 存储位置(数据根迁移) =====
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageInfo {
+    current_root: String,
+    is_custom: bool,
+    default_root: String,
+}
+
+/// 数据根现状:设置页展示用(同步命令,只读内存)
+#[tauri::command]
+fn get_storage_info(state: State<AppState>) -> StorageInfo {
+    StorageInfo {
+        current_root: state.data_dir.to_string_lossy().into_owned(),
+        is_custom: state.data_dir != state.default_data_dir,
+        default_root: state.default_data_dir.to_string_lossy().into_owned(),
+    }
+}
+
+/// 目录选择器:迁移目标由用户挑选(桌面专属;移动端不开放存储迁移)
+#[tauri::command]
+async fn pick_storage_dir() -> Option<String> {
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .set_title("选择音乐库存储位置")
+            .pick_folder()
+            .await
+            .map(|f| f.path().to_string_lossy().to_string())
+    }
+    #[cfg(mobile)]
+    None
+}
+
+/// 迁移数据根到所选目录(None = 恢复默认位置)。
+/// 复制-校验-清理全程持扫描闸;成功后延迟自动重启,进程退出前用旧路径
+/// 的窗口短暂可容忍(旧根已不再被写,引导文件已指向新根)
+#[tauri::command]
+async fn change_storage_root(
+    app: tauri::AppHandle,
+    dir: Option<String>,
+) -> Result<storage::MigrationReport, String> {
+    // 整库复制可能分钟级:放阻塞线程池,别卡 tokio worker
+    let app2 = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        storage::change_storage_root_blocking(&app2, dir.as_deref())
+    })
+    .await
+    .map_err(|e| format!("迁移线程失败: {e}"))??;
+    // 给前端两秒展示「迁移完成」,然后自动重启加载新根
+    let app3 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        app3.restart();
+    });
+    Ok(report)
 }
 
 /// 打开导入目录(桌面调资源管理器;移动端无独立文件管理器概念)
@@ -182,7 +249,7 @@ fn discard_preview(id: String, state: tauri::State<AppState>) -> Result<(), Stri
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         return Err("非法的暂存 id".into());
     }
-    let dir = state.cache_dir.join("covers").join("preview").join(&id);
+    let dir = state.data_dir.join("covers").join("preview").join(&id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
@@ -1055,21 +1122,38 @@ pub fn run() {
     builder
         .setup(|app| {
             let handle = app.handle();
-            let data_dir = handle.path().app_data_dir().expect("无法确定应用数据目录");
+            let default_data_dir = handle.path().app_data_dir().expect("无法确定应用数据目录");
             let cache_dir = handle.path().app_cache_dir().expect("无法确定应用缓存目录");
+            std::fs::create_dir_all(&default_data_dir).ok();
+            // 数据根由引导文件(storage.json,固定在默认目录)决定:用户可把整库
+            // 迁到任意本地目录;自定义根不可用时回退默认,配置保留
+            let (data_dir, _custom) = storage::resolve_data_root(&default_data_dir);
             std::fs::create_dir_all(&data_dir).ok();
-            std::fs::create_dir_all(cache_dir.join("covers")).ok();
+            // 封面缓存随数据根走:应用数据自包含,迁移时整库带走
+            let covers_dir = data_dir.join("covers");
+            std::fs::create_dir_all(&covers_dir).ok();
+            // 0.9.x 的封面缓存在系统缓存目录:一次性并入数据根(失败静默,可再生)
+            let legacy_covers_moved = storage::adopt_legacy_covers(&cache_dir, &covers_dir);
             // 清理上次预览遗留的暂存目录:确认/取消时都会清理,这里兜底异常退出残留
-            let _ = fs::remove_dir_all(cache_dir.join("covers").join("preview"));
+            let _ = fs::remove_dir_all(covers_dir.join("preview"));
             // 兜底清理异常退出残留的导出/下载暂存目录:崩溃/断电时整包音频
             // 会永久留在系统 Temp(可能几百 MB × 多个)。Temp 目录膨胀时
             // 同步 read_dir+删除会推迟首帧,挂到阻塞线程池与窗口创建并行
             tauri::async_runtime::spawn_blocking(cleanup_stale_temp_dirs);
-            let lib = Library::load(&data_dir.join(LIBRARY_FILE));
+            let mut lib = Library::load(&data_dir.join(LIBRARY_FILE));
+            if legacy_covers_moved {
+                // 曲库里的封面路径同步改指新位置,否则首次扫描因封面缺失
+                // 把整库当「已变化」全量重解析。此时状态尚未 manage,独占写安全
+                storage::remap_cover_paths(&mut lib, &cache_dir.join("covers"), &covers_dir);
+                if let Ok(bytes) = lib.to_bytes() {
+                    let _ = Library::write_bytes(&data_dir.join(LIBRARY_FILE), &bytes);
+                }
+            }
             let stats = stats::StatsData::load(&data_dir.join(stats::STATS_FILE));
             app.manage(AppState {
                 lib: Mutex::new(lib),
                 data_dir,
+                default_data_dir,
                 cache_dir,
                 scan_gate: Mutex::new(()),
                 stats: Mutex::new(stats),
@@ -1184,6 +1268,9 @@ pub fn run() {
             import_playlist_tmcl,
             import_tmca,
             get_resource_usage,
+            get_storage_info,
+            pick_storage_dir,
+            change_storage_root,
             online_search,
             online_play_url,
             online_download,
@@ -1206,6 +1293,7 @@ mod tests {
         super::AppState {
             lib: std::sync::Mutex::new(model::Library::default()),
             data_dir: dir.clone(),
+            default_data_dir: dir.clone(),
             cache_dir: dir.join("cache"),
             scan_gate: std::sync::Mutex::new(()),
             stats: std::sync::Mutex::new(crate::stats::StatsData::empty()),

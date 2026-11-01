@@ -417,7 +417,8 @@ pub(crate) fn inspect_package_blocking(
         _ => return Err("仅支持 .tmc/.tmca/.tmcl".into()),
     };
     let state = app.state::<AppState>();
-    let staging_root = state.cache_dir.join("covers").join("preview");
+    // 预览暂存随数据根的 covers 走:asset 协议放行的正是这个目录
+    let staging_root = state.data_dir.join("covers").join("preview");
     fs::create_dir_all(&staging_root).map_err(|e| e.to_string())?;
     let id = format!(
         "{}-{:x}",
@@ -1499,6 +1500,7 @@ mod tests {
                 ..Default::default()
             }),
             data_dir: dir.clone(),
+            default_data_dir: dir.clone(),
             cache_dir: dir.join("cache"),
             scan_gate: Mutex::new(()),
             stats: Mutex::new(crate::stats::StatsData::empty()),

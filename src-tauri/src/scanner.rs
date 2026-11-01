@@ -153,7 +153,8 @@ pub fn run_scan(app: &AppHandle) -> Result<ScanReport, String> {
     // 进度分母取整理与去重之后的最终清单:否则重复副本被清理后进度永远到不了满格
     let total = files.len();
 
-    let covers_dir = state.cache_dir.join("covers");
+    // 封面缓存随数据根走(可迁移到自定义目录),不再挂系统缓存目录
+    let covers_dir = state.data_dir.join("covers");
     let _ = fs::create_dir_all(&covers_dir);
 
     // 专辑封面去重:同一张专辑只提取/落盘一次

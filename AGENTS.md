@@ -18,7 +18,7 @@ npm run build   # 含 vue-tsc 类型检查
 ## 目录结构
 
 - `src-tauri/src/lib.rs` — 全部 Tauri commands（注册于 `run()`）；托盘、单实例、文件关联、两阶段导出、在线匹配也在这里。
-- `src-tauri/src/scanner.rs` — 增量扫描与元数据解析（lofty）；`model.rs` — 数据结构与 library.json 原子写；`lyrics.rs` — LRC 解析与乱码修复；`single_instance.rs` — 启动守卫（已有实例时询问重启，互斥体去重防连点叠窗）。
+- `src-tauri/src/scanner.rs` — 增量扫描与元数据解析（lofty）；`model.rs` — 数据结构与 library.json 原子写；`lyrics.rs` — LRC 解析与乱码修复；`single_instance.rs` — 启动守卫（已有实例时询问重启，互斥体去重防连点叠窗）；`storage.rs` — 数据根解析（storage.json 引导）与整库迁移（复制-校验-清理 + 路径重映射）。
 - `src-tauri/src/online.rs` — 在线音源（网易云 / QQ / 酷狗 / 酷我公开搜索、取链、歌词、封面接口）；媒体 URL 域名白名单与酷我免费白名单也在这里，改动前必读文件头合规边界。
 - `src/api.ts` — **唯一** invoke 封装层：新增后端 command 必须同步在这里加封装。
 - `src/platform.ts` — 运行平台判定；Android 默认进在线音乐、隐藏桌面专属入口。
@@ -40,7 +40,7 @@ npm run build   # 含 vue-tsc 类型检查
 - 专辑唯一键 = `albumArtist \u{1} album`（前端 `keyOf()`，后端 scanner）。
 - Track.id = 文件路径的 64 位 hash（`scanner::hash_str`），路径变即新 id；**在线曲目 id = 来源前缀 + 平台 id**（`net:` 网易云 / `qq:` songmid / `kugou:` hash / `kuwo:` rid），path 为空串，不入 library.json。
 - 听歌统计 `stats.json` 为 v2 结构：`days` 为本地+在线总和，`daysLocal` / `daysOnline` 分桶；在线曲目不在曲库，榜单元数据随冲刷写入 `onlineMeta`。
-- 曲库持久化 `%APPDATA%\com.art3mis.taurimusic\library.json`（tmp→bak→rename 原子写，损坏回退）；封面缓存 `%LOCALAPPDATA%\...\covers\`（512px JPEG）。
+- **数据根可迁移**（storage.rs）：曲库/音乐/封面/回收站都挂在数据根下，默认 `%APPDATA%\com.art3mis.taurimusic`，设置 → 存储位置可迁到任意本地目录（目标统一落 `TauriMusic/` 子目录，重启后生效）；引导文件 storage.json 固定留在默认目录，自定义根建不出来时启动回退默认；封面缓存在 `<数据根>\covers\`（512px JPEG，旧版 LOCALAPPDATA 位置启动时一次性并入）。迁移时 library.json 内全部绝对路径（曲目/歌词/封面/回收站/登记文件夹）经 remap_path 重映射。
 
 ## 平台与网络限制
 

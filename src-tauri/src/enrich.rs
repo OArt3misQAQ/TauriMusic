@@ -57,7 +57,7 @@ pub(crate) fn ensure_online_cover(
     online::validate_id(source, id)?;
     let dir = app
         .state::<AppState>()
-        .cache_dir
+        .data_dir
         .join("covers")
         .join("online");
     // 网易云沿用旧文件名,避免已有缓存失效;其他来源加前缀隔离,防 hash/id 撞名

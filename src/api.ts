@@ -112,6 +112,29 @@ export interface RestoreReport {
   failed: number;
 }
 
+/** 存储位置(数据根)现状:曲库数据/音乐/封面缓存/回收站的所在目录 */
+export interface StorageInfo {
+  currentRoot: string;
+  /** 是否已迁到自定义目录(false = 还在系统默认位置) */
+  isCustom: boolean;
+  /** 系统默认位置(引导文件所在处,也是「恢复默认」的目标) */
+  defaultRoot: string;
+}
+
+/** 存储迁移进度事件(storage-migration)载荷 */
+export interface StorageMigrationProgress {
+  done: number;
+  total: number;
+  /** copy = 复制中,finalize = 收尾,done = 全部完成 */
+  phase: "copy" | "finalize" | "done";
+}
+
+/** 存储迁移结果:files = 复制的文件数,warnings = 非致命告警(如旧位置个别文件被占用未删) */
+export interface StorageChangeReport {
+  files: number;
+  warnings: string[];
+}
+
 /** 音乐包(.tmcl/.tmca)导入结果 */
 export interface PackImportReport {
   name: string;
@@ -356,6 +379,13 @@ export const api = {
   /** 在线曲目封面:Rust 端落盘到封面缓存后返回本地路径(无图返回 null) */
   onlineCover: (source: OnlineSource, id: string, coverUrl: string | null) =>
     invoke<string | null>("online_cover", { source, id, coverUrl }),
+  /** 存储位置(数据根)现状(同步命令,只读内存) */
+  storageInfo: () => invoke<StorageInfo>("get_storage_info"),
+  /** 打开目录选择器挑选迁移目标;取消返回 null */
+  pickStorageDir: () => invoke<string | null>("pick_storage_dir"),
+  /** 迁移数据根到所选目录(dir 为 null 表示恢复默认);成功后后端自动重启应用 */
+  changeStorageRoot: (dir: string | null) =>
+    invoke<StorageChangeReport>("change_storage_root", { dir }),
 };
 
 /** 在线曲目在播放队列里的完整 id(来源前缀 + 平台 id):

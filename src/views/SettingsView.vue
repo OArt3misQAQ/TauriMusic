@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ui, setThemeMode, setSkin, setPerfMode } from "../stores/ui";
 import { lib, flashStatus, openImportDir, addFolder, rescan, importTmcPick, importMusicPick } from "../stores/library";
 import { statsEnabled, setStatsEnabled, clearStats } from "../stores/stats";
 import { lyricsOn, toggleLyricsWindow } from "../stores/media";
-import { api, type AssocState } from "../api";
+import { api, type AssocState, type StorageInfo, type StorageMigrationProgress } from "../api";
 import { isMobile } from "../platform";
 
 const skinOptions = [
@@ -71,7 +72,53 @@ onMounted(async () => {
   } catch (err) {
     console.error("读取自启动状态失败", err);
   }
+  try {
+    storage.value = await api.storageInfo();
+  } catch (err) {
+    console.error("读取存储位置失败", err);
+  }
+  // 迁移进度由后端按复制节奏推事件(约每 32 个文件一条)
+  unlistenMigration = await listen<StorageMigrationProgress>("storage-migration", (e) => {
+    migrationDone.value = e.payload.done;
+    migrationTotal.value = e.payload.total;
+  });
 });
+
+// ===== 存储位置(数据根迁移,桌面专属) =====
+const storage = ref<StorageInfo | null>(null);
+const migrating = ref(false);
+const migrationDone = ref(0);
+const migrationTotal = ref(0);
+const migrationHint = computed(() =>
+  migrationTotal.value > 0
+    ? `正在复制 ${migrationDone.value}/${migrationTotal.value} 个文件…完成后应用自动重启`
+    : "正在准备迁移…",
+);
+let unlistenMigration: UnlistenFn | null = null;
+onUnmounted(() => unlistenMigration?.());
+
+/** 选目录并迁移;成功后后端延迟自动重启加载新根,失败恢复按钮态 */
+async function migrateStorage(dir: string | null): Promise<void> {
+  migrating.value = true;
+  migrationDone.value = 0;
+  migrationTotal.value = 0;
+  try {
+    const r = await api.changeStorageRoot(dir);
+    flashStatus(
+      r.warnings.length
+        ? `迁移完成,即将重启(有 ${r.warnings.length} 条清理告警)`
+        : "迁移完成,应用即将重启…",
+    );
+  } catch (err) {
+    migrating.value = false;
+    flashStatus(`迁移失败: ${String(err)}`);
+  }
+}
+
+async function pickAndMigrate(): Promise<void> {
+  const dir = await api.pickStorageDir();
+  if (dir) await migrateStorage(dir);
+}
 
 async function toggleAutostart(): Promise<void> {
   const target = !autostart.value;
@@ -341,6 +388,43 @@ async function clearStatsConfirmed(): Promise<void> {
                 {{ lib.scanning ? `扫描中 ${lib.scanCurrent}/${lib.scanTotal}` : "重新扫描" }}
               </button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 存储位置:整库迁移到自定义目录,桌面专属(移动端数据由系统在应用私有目录管理) -->
+      <section v-if="!isMobile" class="sect">
+        <div class="sect-head">
+          <span class="tint" style="--tint: #5e5ce6">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="5.5" rx="7.5" ry="2.6" />
+              <path d="M4.5 5.5v6.5c0 1.45 3.36 2.6 7.5 2.6s7.5-1.15 7.5-2.6V5.5" />
+              <path d="M4.5 12v6.5c0 1.45 3.36 2.6 7.5 2.6s7.5-1.15 7.5-2.6V12" />
+            </svg>
+          </span>
+          <span>存储位置</span>
+        </div>
+        <div class="group">
+          <div class="opt static col-wrap">
+            <span class="label">
+              数据根目录{{ storage?.isCustom ? "(自定义)" : "" }}
+              <small class="sub">曲库数据、音乐文件、封面缓存与回收站都在这里,默认在 C 盘系统数据目录。迁移会先把整库复制到新位置再自动重启,全部成功后才清理旧位置;外置盘拔出时应用会回退默认位置,重新插上并重启即恢复</small>
+            </span>
+            <div class="btns">
+              <button class="pill pill--hover mini" :disabled="lib.scanning || migrating" @click="pickAndMigrate">
+                {{ migrating ? "迁移中…" : "更改存储位置…" }}
+              </button>
+              <button
+                v-if="storage?.isCustom"
+                class="pill pill--hover mini"
+                :disabled="lib.scanning || migrating"
+                @click="migrateStorage(null)"
+              >
+                恢复默认位置
+              </button>
+            </div>
+            <p class="dir" :title="storage?.currentRoot">{{ storage?.currentRoot }}</p>
+            <p v-if="migrating" class="dir">{{ migrationHint }}</p>
           </div>
         </div>
       </section>
