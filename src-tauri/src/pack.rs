@@ -132,39 +132,8 @@ pub(crate) fn import_tmc_file(
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     sevenz_rust2::decompress_file(src, &dest).map_err(|e| format!("解包失败: {e}"))?;
 
-    // 新包带音频 SHA-256:解包结果与记录不符说明文件损坏,拒绝入库并清理
-    let meta_path = dest.join("meta.json");
-    let mut title = stem.clone();
-    if meta_path.is_file() {
-        if let Ok(v) =
-            serde_json::from_slice::<serde_json::Value>(&fs::read(&meta_path).unwrap_or_default())
-        {
-            if let Some(expect) = v.get("sha256").and_then(|x| x.as_str()) {
-                let audio = fs::read_dir(&dest).ok().and_then(|rd| {
-                    rd.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-                        p.extension()
-                            .and_then(|x| x.to_str())
-                            .map(|x| scanner::EXTENSIONS.contains(&x.to_lowercase().as_str()))
-                            .unwrap_or(false)
-                    })
-                });
-                if let Some(audio) = audio {
-                    let ok = sha256_hex(&audio)
-                        .map(|h| h.eq_ignore_ascii_case(expect))
-                        .unwrap_or(false);
-                    if !ok {
-                        let _ = fs::remove_dir_all(&dest);
-                        return Err("音乐包校验失败:文件已损坏".into());
-                    }
-                }
-            }
-            if let Some(t) = v.get("title").and_then(|x| x.as_str()) {
-                if !t.trim().is_empty() {
-                    title = t.trim().to_string();
-                }
-            }
-        }
-    }
+    // 包内音频只 find 一次、SHA 只算一遍:校验与内容去重共用同一份哈希
+    // (无损曲可达数百 MB,整读两遍纯属浪费)
     let audio = fs::read_dir(&dest)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
@@ -176,8 +145,32 @@ pub(crate) fn import_tmc_file(
                 .unwrap_or(false)
         })
         .ok_or("包内没有音频文件")?;
-    // 内容级去重:音频 SHA-256 与曲库已有曲目相同 → 清理并跳过(单曲包此前没有去重)
     let sha = sha256_hex(&audio).map(|h| h.to_ascii_lowercase());
+
+    // 新包带音频 SHA-256:解包结果与记录不符说明文件损坏,拒绝入库并清理
+    let meta_path = dest.join("meta.json");
+    let mut title = stem.clone();
+    if meta_path.is_file() {
+        if let Ok(v) =
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&meta_path).unwrap_or_default())
+        {
+            if let Some(expect) = v.get("sha256").and_then(|x| x.as_str()) {
+                let ok = sha
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(expect));
+                if !ok {
+                    let _ = fs::remove_dir_all(&dest);
+                    return Err("音乐包校验失败:文件已损坏".into());
+                }
+            }
+            if let Some(t) = v.get("title").and_then(|x| x.as_str()) {
+                if !t.trim().is_empty() {
+                    title = t.trim().to_string();
+                }
+            }
+        }
+    }
+    // 内容级去重:音频 SHA-256 与曲库已有曲目相同 → 清理并跳过(单曲包此前没有去重)
     if let Some(sha) = &sha {
         let dup = {
             let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
@@ -975,13 +968,16 @@ pub(crate) fn import_tmca_blocking(
     // 包级封面分发到各曲目目录(目录级封面约定);曲目带内嵌封面时扫描器自动优先内嵌
     distribute_pack_cover(&dest, &tracks_json);
 
-    // 扫描入库(与拖拽导入同一路径);专辑归类由 meta.json/内嵌标签成立
-    scanner::run_scan(app)?;
+    // 全部曲目都判重时没有任何落库变化:跳过全库重扫与事件广播
+    if !tracks_json.is_empty() {
+        // 扫描入库(与拖拽导入同一路径);专辑归类由 meta.json/内嵌标签成立
+        scanner::run_scan(app)?;
 
-    // 来源包记录的 SHA 写进曲库,供后续包导入做内容去重
-    record_pack_shas(&state, &dest, &tracks_json)?;
+        // 来源包记录的 SHA 写进曲库,供后续包导入做内容去重
+        record_pack_shas(&state, &dest, &tracks_json)?;
 
-    let _ = app.emit("library-changed", ());
+        let _ = app.emit("library-changed", ());
+    }
     // 全部曲目都与曲库重复:不是错误,作为正常跳过返回(导入预览里明确提示)
     if tracks_json.is_empty() && skipped > 0 {
         return Ok(PackImportReport {
@@ -1328,11 +1324,14 @@ pub(crate) fn import_playlist_tmcl_blocking(
     // 为无内嵌标签的文件写 meta.json(扫描器据此补齐元数据)
     write_manifest_meta_files(&dest, &tracks_json);
 
-    // 扫描入库(与拖拽导入同一路径)
-    scanner::run_scan(app)?;
+    // 全部曲目都判重时没有任何落库变化:跳过全库重扫(下方 entries 空检查会报错)
+    if !tracks_json.is_empty() {
+        // 扫描入库(与拖拽导入同一路径)
+        scanner::run_scan(app)?;
 
-    // 来源包记录的 SHA 写进曲库,供后续包导入做内容去重
-    record_pack_shas(&state, &dest, &tracks_json)?;
+        // 来源包记录的 SHA 写进曲库,供后续包导入做内容去重
+        record_pack_shas(&state, &dest, &tracks_json)?;
+    }
 
     // 全部曲目都与曲库重复:不建空歌单,作为正常跳过返回(导入预览里明确提示)
     if tracks_json.is_empty() && skipped > 0 {
@@ -1342,7 +1341,16 @@ pub(crate) fn import_playlist_tmcl_blocking(
             skipped,
         });
     }
-    // 建立播放列表:优先用扫描后的曲库数据,否则退回 manifest 快照
+    // 建立播放列表:优先用扫描后的曲库数据,否则退回 manifest 快照。
+    // 一次拿锁建好归一化路径索引:歌单可能几百上千条,逐条拿锁线性扫全库
+    // 是 O(n·m) 的锁竞争与重复分配(stage_tmcl_blocking 同款模式)
+    let by_path: std::collections::HashMap<String, model::Track> = {
+        let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
+        lib.tracks
+            .iter()
+            .map(|t| (norm_path(&t.path), t.clone()))
+            .collect()
+    };
     let mut entries: Vec<model::PlaylistEntry> = Vec::new();
     for item in &tracks_json {
         let Some(dir) = item
@@ -1366,13 +1374,8 @@ pub(crate) fn import_playlist_tmcl_blocking(
         // 统一分隔符:manifest 用 '/',walkdir 的 track.path 用 '\'
         let abs_str = abs.to_string_lossy().replace('/', "\\");
         let abs_norm = norm_path(&abs_str);
-        let from_lib = {
-            let lib = state.lib.lock().map_err(|_| "内部状态不可用".to_string())?;
-            lib.tracks
-                .iter()
-                .find(|t| t.path == abs_str || norm_path(&t.path) == abs_norm)
-                .cloned()
-        };
+        // 精确相等是归一化相等的子集,按归一化键查即可
+        let from_lib = by_path.get(&abs_norm).cloned();
         entries.push(match from_lib {
             Some(t) => entry_of(&t),
             None => model::PlaylistEntry {
