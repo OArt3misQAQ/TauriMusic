@@ -1,25 +1,58 @@
-/* TauriMusic 宣传页交互:原生 JS,无依赖 */
+/* TauriMusic 宣传页交互：双设计、深浅色与播放页演示，原生 JS 无依赖。 */
 (function () {
   "use strict";
 
-  /* ---------- 深浅色切换(记忆选择) ---------- */
   var root = document.documentElement;
-  try {
-    var saved = localStorage.getItem("tm2-theme");
-    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
-  } catch (e) { /* file:// 下隐私模式可能禁用,忽略 */ }
   var themeBtn = document.getElementById("themeBtn");
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  var reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function updateThemeMeta() {
+    if (!themeMeta) return;
+    var design = root.getAttribute("data-design");
+    var theme = root.getAttribute("data-theme");
+    themeMeta.setAttribute("content", design === "paper" ? "#f0eee6" : theme === "light" ? "#eef0f7" : "#0b0d14");
+  }
+
+  function applyDesign(design) {
+    root.setAttribute("data-design", design);
+    document.querySelectorAll("[data-design-btn]").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", String(btn.getAttribute("data-design-btn") === design));
+    });
+    updateThemeMeta();
+  }
+
+  /* 可通过 ?design=paper 分享指定风格；无参数时恢复上次选择。 */
+  var initialDesign = "glass";
+  try {
+    var queryDesign = new URLSearchParams(window.location.search).get("design");
+    var savedDesign = localStorage.getItem("tm2-design");
+    if (queryDesign === "paper" || queryDesign === "glass") initialDesign = queryDesign;
+    else if (savedDesign === "paper" || savedDesign === "glass") initialDesign = savedDesign;
+    var savedTheme = localStorage.getItem("tm2-theme");
+    if (savedTheme === "light" || savedTheme === "dark") root.setAttribute("data-theme", savedTheme);
+  } catch (e) { /* file:// 或隐私模式下不可存储时保留默认值。 */ }
+  applyDesign(initialDesign);
+
+  document.querySelectorAll("[data-design-btn]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = btn.getAttribute("data-design-btn");
+      applyDesign(next);
+      try { localStorage.setItem("tm2-design", next); } catch (e) { /* 仅失去偏好记忆，不影响切换。 */ }
+    });
+  });
+
   if (themeBtn) {
     themeBtn.addEventListener("click", function () {
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
-      try { localStorage.setItem("tm2-theme", next); } catch (e) {}
+      updateThemeMeta();
+      try { localStorage.setItem("tm2-theme", next); } catch (e) { /* 同上。 */ }
     });
   }
 
-  /* ---------- 滚动入场 ---------- */
+  /* 滚动入场；不支持观察器或偏好减少动态时直接显示，避免空白页。 */
   var revealEls = document.querySelectorAll(".reveal");
-  /* 兜底:已在视口内的直接显示(应对带锚点打开、IO 延迟等情况) */
   function sweep() {
     var vh = window.innerHeight || 800;
     revealEls.forEach(function (el) {
@@ -27,7 +60,9 @@
       if (r.top < vh * 0.97 && r.bottom > 0) el.classList.add("in");
     });
   }
-  if ("IntersectionObserver" in window) {
+  if (reducedMotion || !("IntersectionObserver" in window)) {
+    revealEls.forEach(function (el) { el.classList.add("in"); });
+  } else {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
         if (en.isIntersecting) {
@@ -35,33 +70,30 @@
           io.unobserve(en.target);
         }
       });
-    }, { threshold: 0.12 });
+    }, { threshold: 0.1 });
     revealEls.forEach(function (el) { io.observe(el); });
-  }
-  window.addEventListener("load", function () {
+    window.addEventListener("load", function () {
+      sweep();
+      window.setTimeout(sweep, 350);
+    });
     sweep();
-    setTimeout(sweep, 350);
-  });
-  sweep();
+  }
 
-  /* ---------- 玻璃面板指针高光 ---------- */
+  /* 玻璃高光只在玻璃设计下计算，纸感设计不付出无谓的指针渲染成本。 */
   var raf = 0;
   document.addEventListener("pointermove", function (e) {
-    if (raf) return;
+    if (raf || root.getAttribute("data-design") !== "glass") return;
     raf = requestAnimationFrame(function () {
       raf = 0;
       var el = e.target && e.target.closest ? e.target.closest(".glass, .glass-heavy") : null;
-      document.querySelectorAll(".glass, .glass-heavy").forEach(function (g) {
-        if (g === el) {
-          var r = g.getBoundingClientRect();
-          g.style.setProperty("--mx", ((e.clientX - r.left) / r.width) * 100 + "%");
-          g.style.setProperty("--my", ((e.clientY - r.top) / r.height) * 100 + "%");
-        }
-      });
+      if (!el) return;
+      var r = el.getBoundingClientRect();
+      el.style.setProperty("--mx", ((e.clientX - r.left) / r.width) * 100 + "%");
+      el.style.setProperty("--my", ((e.clientY - r.top) / r.height) * 100 + "%");
     });
   }, { passive: true });
 
-  /* ---------- 统计数字滚动 ---------- */
+  /* 数字只承担信息层级，不阻塞阅读。 */
   function animateCount(el) {
     var target = parseInt(el.getAttribute("data-count"), 10);
     if (isNaN(target)) return;
@@ -71,8 +103,12 @@
       done = true;
       el.textContent = target.toLocaleString("en-US");
     }
+    if (reducedMotion) {
+      finish();
+      return;
+    }
     var t0 = null;
-    var dur = 1400;
+    var dur = 1200;
     function step(ts) {
       if (done) return;
       if (!t0) t0 = ts;
@@ -83,11 +119,10 @@
       else finish();
     }
     requestAnimationFrame(step);
-    /* 兜底:rAF 被节流/虚拟时间截断时也能落到终值 */
-    setTimeout(finish, dur + 400);
+    window.setTimeout(finish, dur + 400);
   }
   var counters = document.querySelectorAll("[data-count]");
-  if ("IntersectionObserver" in window) {
+  if ("IntersectionObserver" in window && !reducedMotion) {
     var cio = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
         if (en.isIntersecting) {
@@ -101,14 +136,14 @@
     counters.forEach(animateCount);
   }
 
-  /* ---------- 全屏播放页演示:进度 + 逐行歌词联动 ---------- */
-  var DURATION = 269; /* 4:29,与演示曲目时长一致 */
+  /* 播放页是纯交互示意：不加载音频，不发起网络请求。 */
+  var DURATION = 269;
   var playBtn = document.getElementById("npPlay");
   var fill = document.getElementById("npFill");
   var cur = document.getElementById("npCur");
   var track = document.getElementById("npTrack");
   var lyricsEl = document.getElementById("npLyrics");
-  if (playBtn && fill && lyricsEl) {
+  if (playBtn && fill && cur && lyricsEl) {
     var lines = Array.prototype.slice.call(lyricsEl.querySelectorAll("li"));
     var pos = 0;
     var playing = false;
@@ -121,48 +156,64 @@
     function render() {
       fill.style.width = (pos / DURATION) * 100 + "%";
       cur.textContent = fmt(pos);
-      /* 歌词行按进度均分高亮(演示逻辑,真实实现读 LRC 时间戳) */
+      if (track) {
+        track.setAttribute("aria-valuenow", String(Math.floor(pos)));
+        track.setAttribute("aria-valuetext", fmt(pos));
+      }
       var per = DURATION / lines.length;
       var active = Math.min(lines.length - 1, Math.floor(pos / per));
       lines.forEach(function (li, i) {
         li.classList.toggle("on", i === active);
         li.classList.toggle("done", i < active);
+        li.setAttribute("aria-current", i === active ? "true" : "false");
       });
-      /* 让高亮行尽量停在可视区中部(overflow:hidden 也可编程滚动) */
       var li = lines[active];
-      if (li) {
-        lyricsEl.scrollTop = Math.max(0, li.offsetTop - lyricsEl.clientHeight / 2 + li.clientHeight);
-      }
+      if (li) lyricsEl.scrollTop = Math.max(0, li.offsetTop - lyricsEl.clientHeight / 2 + li.clientHeight);
     }
     function tick(ts) {
       if (!playing) return;
       if (!lastTs) lastTs = ts;
       var dt = (ts - lastTs) / 1000;
       lastTs = ts;
-      pos += dt * 8; /* 演示用 8 倍速,4 分半的歌约 34 秒过完 */
-      if (pos >= DURATION) pos = 0; /* 循环演示 */
+      pos += dt * 8;
+      if (pos >= DURATION) pos = 0;
       render();
       requestAnimationFrame(tick);
     }
     playBtn.addEventListener("click", function () {
       playing = !playing;
       playBtn.classList.toggle("playing", playing);
+      playBtn.setAttribute("aria-pressed", String(playing));
       lastTs = 0;
       if (playing) requestAnimationFrame(tick);
     });
-    /* 点进度条跳转 */
     if (track) {
       track.addEventListener("click", function (e) {
         var r = track.getBoundingClientRect();
         pos = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * DURATION;
         render();
       });
+      track.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          pos = Math.max(0, Math.min(DURATION, pos + (e.key === "ArrowRight" ? 5 : -5)));
+        } else if (e.key === "Home") pos = 0;
+        else if (e.key === "End") pos = DURATION - 0.01;
+        else return;
+        e.preventDefault();
+        render();
+      });
     }
-    /* 点歌词行跳转(与真实产品行为一致) */
     lines.forEach(function (li, i) {
-      li.addEventListener("click", function () {
+      function seek() {
         pos = (DURATION / lines.length) * i + 0.01;
         render();
+      }
+      li.addEventListener("click", seek);
+      li.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          seek();
+        }
       });
     });
     render();
