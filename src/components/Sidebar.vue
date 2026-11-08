@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ui, go, openPlaylist } from "../stores/ui";
 import { lib } from "../stores/library";
 import { statsEnabled } from "../stores/stats";
@@ -26,10 +26,72 @@ const statusText = computed(() =>
     ? `正在扫描 ${lib.scanTotal > 0 ? `${lib.scanCurrent}/${lib.scanTotal}` : "…"}`
     : lib.importStatus,
 );
+
+/* ===== 液态玻璃选中指示 =====
+   一块玻璃胶囊在导航项之间流动滑动,取代"选谁谁铺红底"。
+   位置按激活项的真实矩形测量:歌单区滚动、状态行显隐、歌单增删、
+   窗口缩放都会改变落点,逐一跟位;滚动跟位不走过渡,避免胶囊拖着跑 */
+const sidebarEl = ref<HTMLElement | null>(null);
+const glassEl = ref<HTMLElement | null>(null);
+const activeKey = computed(() => `${ui.view}|${ui.playlistId ?? ""}`);
+let resizeOb: ResizeObserver | null = null;
+let plListEl: HTMLElement | null = null;
+
+function placeGlass(animated: boolean): void {
+  const side = sidebarEl.value;
+  const pill = glassEl.value;
+  if (!side || !pill) return;
+  const active = side.querySelector<HTMLElement>(".nav-item.active, .action.active");
+  // 搜索等视图没有激活项:胶囊淡出而不是留在旧位置
+  if (!active) {
+    pill.style.opacity = "0";
+    return;
+  }
+  const sr = side.getBoundingClientRect();
+  const ar = active.getBoundingClientRect();
+  // 激活歌单被滚出歌单区视口时隐藏,不让胶囊浮在别的行上
+  let visible = true;
+  const list = active.closest<HTMLElement>(".pl-list");
+  if (list) {
+    const lr = list.getBoundingClientRect();
+    visible = ar.bottom > lr.top + 2 && ar.top < lr.bottom - 2;
+  }
+  pill.classList.toggle("no-anim", !animated);
+  pill.style.opacity = visible ? "1" : "0";
+  pill.style.left = `${ar.left - sr.left}px`;
+  pill.style.width = `${ar.width}px`;
+  pill.style.height = `${ar.height}px`;
+  pill.style.transform = `translateY(${ar.top - sr.top}px)`;
+  if (!animated) requestAnimationFrame(() => pill.classList.remove("no-anim"));
+}
+const onPlScroll = (): void => placeGlass(false);
+
+watch([activeKey, () => lib.playlists.length, statusText, statsEnabled, () => ui.skin], () => {
+  void nextTick(() => placeGlass(true));
+});
+
+onMounted(() => {
+  void nextTick(() => placeGlass(false));
+  const side = sidebarEl.value;
+  if (!side) return;
+  plListEl = side.querySelector<HTMLElement>(".pl-list");
+  plListEl?.addEventListener("scroll", onPlScroll, { passive: true });
+  resizeOb = new ResizeObserver(() => placeGlass(true));
+  resizeOb.observe(side);
+  if (plListEl) resizeOb.observe(plListEl);
+});
+onUnmounted(() => {
+  resizeOb?.disconnect();
+  resizeOb = null;
+  plListEl?.removeEventListener("scroll", onPlScroll);
+  plListEl = null;
+});
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside ref="sidebarEl" class="sidebar">
+    <!-- 液态玻璃选中胶囊:z-index -1 落在侧栏隔离上下文内、按钮文字之下 -->
+    <div v-if="ui.skin === 'glass'" ref="glassEl" class="nav-glass" aria-hidden="true"></div>
     <div class="search">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <circle cx="11" cy="11" r="6.5" />
@@ -172,6 +234,61 @@ const statusText = computed(() =>
   padding: 14px 12px 14px;
   gap: 4px;
   min-height: 0;
+  position: relative;
+}
+
+/* 液态玻璃选中胶囊:半透玻璃体 + 上缘受光 + 一圈 rim light,
+   滑动用液体减速缓动,像一滴玻璃在导航间流过去再落定。
+   侧栏已有 isolation:isolate,-1 层只压在按钮文字下、不会漏到氛围层后面 */
+.nav-glass {
+  position: absolute;
+  top: 0;
+  left: 12px;
+  width: 208px;
+  height: 33px;
+  z-index: -1;
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.42));
+  /* 兜底纯 blur 磨砂:折射滤镜引用失效时整条 backdrop-filter 会被静默丢弃 */
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3),
+    0 4px 14px rgba(0, 0, 0, 0.1);
+  /* 滑动用液体减速:弹簧曲线 120ms 就收敛,肉眼看不到"流过去"的过程 */
+  transition:
+    transform 0.55s var(--ease-liquid),
+    height 0.55s var(--ease-liquid),
+    opacity 0.22s ease;
+}
+.nav-glass.no-anim {
+  transition: none;
+}
+html.dark.glass .nav-glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.09));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 6px 18px rgba(0, 0, 0, 0.35);
+}
+/* 边缘透镜折射:与侧栏/顶栏/弹窗同一套滤镜,胶囊边缘向外弯折 */
+@supports (backdrop-filter: url("#glass-refract")) {
+  .nav-glass {
+    backdrop-filter: blur(14px) saturate(1.6) url("#glass-refract");
+    -webkit-backdrop-filter: blur(14px) saturate(1.6) url("#glass-refract");
+  }
+  html.dark.glass .nav-glass {
+    backdrop-filter: blur(14px) saturate(1.5) url("#glass-refract");
+    -webkit-backdrop-filter: blur(14px) saturate(1.5) url("#glass-refract");
+  }
+}
+/* 流畅模式没有 backdrop-filter:胶囊退化为实底 pill,选中态依旧清晰 */
+:root.perf-smooth .nav-glass {
+  background: var(--pill-bg);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 
 .search {

@@ -933,15 +933,27 @@ html.glass .nav-item {
   border-radius: 999px;
 }
 
-/* 激活态:Apple Music 式红字浅红底,白玻璃上清晰可辨 */
-html.glass .nav-item.active {
-  background: color-mix(in srgb, var(--accent) 11%, transparent);
+/* 激活态:玻璃皮肤下底色交给侧栏的液态玻璃滑动胶囊(Sidebar.vue),
+   这里只撤掉旧的红底/灰底块;红字红图标保留作品牌 tint */
+html.glass .nav-item.active,
+html.glass .action.active {
+  background: transparent;
   box-shadow: none;
 }
+/* 悬停 tint 不盖在胶囊上,否则玻璃面像被抹了一道灰 */
+html.glass .nav-item.active:hover,
+html.glass .action.active:hover {
+  background: transparent;
+}
 
-html.dark.glass .nav-item.active {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+html.dark.glass .nav-item.active,
+html.dark.glass .action.active {
+  background: transparent;
   box-shadow: none;
+}
+html.dark.glass .nav-item.active:hover,
+html.dark.glass .action.active:hover {
+  background: transparent;
 }
 
 html.glass .cover {
