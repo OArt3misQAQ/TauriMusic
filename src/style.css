@@ -28,6 +28,22 @@
   --ease-spring: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 17%, 1.008 19.4%,
       1.036 21.8%, 1.043 24.2%, 1.029 27%, 0.994 31.4%, 0.986 34.1%, 0.996 38.4%,
       1.004 43.2%, 1 50.1%, 1);
+  /* Liquid Glass 精修令牌:Apple 式"先快后稳"的液体减速,比弹簧更克制。
+     页面/播放页/弹窗统一走 --ease-liquid;微交互仍可用 --ease-spring。 */
+  --ease-liquid: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-press: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --duration-fast: 0.18s;
+  --duration-base: 0.28s;
+  --duration-slow: 0.42s;
+  --duration-ambient: 1.2s;
+  --glass-blur: 30px;
+  --glass-blur-heavy: 36px;
+  --glass-saturate: 1.7;
+  --glass-brightness: 1.03;
+  --glass-rim-top: rgba(255, 255, 255, 0.9);
+  --glass-rim-side: rgba(255, 255, 255, 0.35);
+  --glass-specular: rgba(255, 255, 255, 0.14);
+  --ambient-blur: 88px;
 }
 
 html.dark {
@@ -50,6 +66,14 @@ html.dark {
   --scrollbar: rgba(255, 255, 255, 0.3);
   --bar-bg: rgba(20, 20, 22, 0.88);
   --bg-2-solid: #121214;
+  /* 深色玻璃:少糊一点、不提亮背后,折射与饱和度出层次 */
+  --glass-blur: 28px;
+  --glass-blur-heavy: 32px;
+  --glass-saturate: 1.5;
+  --glass-brightness: 1;
+  --glass-rim-top: rgba(255, 255, 255, 0.26);
+  --glass-rim-side: rgba(255, 255, 255, 0.08);
+  --glass-specular: rgba(255, 255, 255, 0.07);
 }
 
 * {
@@ -90,12 +114,15 @@ button {
   border: none;
   cursor: pointer;
   padding: 0;
-  transition: transform 0.35s var(--ease-spring);
+  transition:
+    transform var(--duration-base) var(--ease-press),
+    background-color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
 }
 
-/* 按压手感:按下快速下沉(在组件里覆盖 transition-duration),松手弹簧回弹 */
+/* 按压手感:按下快速下沉(在组件里覆盖 transition-duration),松手液体回弹 */
 button:active {
-  transform: scale(0.96);
+  transform: scale(0.97);
 }
 
 input {
@@ -380,7 +407,7 @@ html.dark.glass body {
   position: absolute;
   inset: -12%;
   background: linear-gradient(165deg, #f1f1f5 0%, #e0e1e7 48%, #d5d6de 100%);
-  animation: ambient-fallback 26s ease-in-out infinite alternate;
+  animation: ambient-fallback 30s var(--ease-liquid) infinite alternate;
 }
 
 html.dark .ambient::before {
@@ -391,11 +418,11 @@ html.dark .ambient::before {
 
 @keyframes ambient-fallback {
   from {
-    transform: translate(-3%, -3%);
+    transform: translate3d(-3%, -3%, 0);
   }
 
   to {
-    transform: translate(3%, 3%);
+    transform: translate3d(3%, 3%, 0);
   }
 }
 
@@ -404,8 +431,9 @@ html.dark .ambient::before {
   inset: -14%;
   background-size: cover;
   background-position: center;
-  filter: blur(88px) saturate(2) brightness(1);
-  animation: ambient-drift 40s ease-in-out infinite alternate;
+  filter: blur(var(--ambient-blur)) saturate(2) brightness(1);
+  animation: ambient-drift 36s var(--ease-liquid) infinite alternate;
+  will-change: transform;
 }
 
 html.dark .ambient-img {
@@ -414,13 +442,18 @@ html.dark .ambient-img {
   filter: blur(88px) saturate(1.7) brightness(0.75);
 }
 
+/* 三段式漂移:位移/缩放/微旋转都走合成器,封面辉光像液体一样缓慢呼吸 */
 @keyframes ambient-drift {
-  from {
-    transform: scale(1.02) translateX(-1.5%);
+  0% {
+    transform: scale(1.04) translate3d(-1.6%, -1%, 0) rotate(-0.35deg);
   }
 
-  to {
-    transform: scale(1.14) translateX(1.5%);
+  52% {
+    transform: scale(1.1) translate3d(0.4%, 0.8%, 0) rotate(0.15deg);
+  }
+
+  100% {
+    transform: scale(1.14) translate3d(1.6%, -0.6%, 0) rotate(0.45deg);
   }
 }
 
@@ -932,6 +965,28 @@ html.dark.glass .range {
       rgba(255, 255, 255, 0.22) var(--fill, 0%));
 }
 
+/* ===== Liquid Glass 流动性精修(Apple HIG) =====
+   只增强玻璃皮肤;纸质/流畅模式不受影响。材质令牌集中在 :root/html.dark,
+   这里把"边缘受光 + 内容画布"统一到同一套液体减速。 */
+html.glass .sidebar,
+html.glass .topbar {
+  transition:
+    border-color var(--duration-base) var(--ease-liquid),
+    box-shadow var(--duration-base) var(--ease-liquid);
+}
+
+/* 内容画布顶部一线受光:玻璃不是均匀磨砂,而是有"上缘进光"的体积 */
+html.glass:not(.dark) .content {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 120px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(255, 255, 255, 0.9));
+}
+html.dark.glass .content {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 120px),
+    linear-gradient(180deg, rgba(16, 16, 20, 0.64), rgba(11, 11, 14, 0.58));
+}
+
 /* ===== 纸质皮肤(html[data-skin="paper"]):奶油纸底 + 墨线 + 颗粒 + 衬线标题 =====
    不只是换色:整个界面按"印刷品"重新上材质——墨线描边、硬阴影、编辑部分隔线。
    玻璃类在此皮肤下不挂载(见 ui.ts),所以这里直接以非玻璃形态覆盖。
@@ -1169,4 +1224,20 @@ html[data-skin="paper"].lyrics-host body::after {
   filter: none !important;
   transform: none !important;
   background: linear-gradient(160deg, #2c2023 0%, #1a1518 52%, #101012 100%) !important;
+}
+
+/* ===== 无障碍:系统"减少动态效果"时,液体漂移/转场全部退场 ===== */
+@media (prefers-reduced-motion: reduce) {
+  .ambient::before,
+  .ambient-img {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

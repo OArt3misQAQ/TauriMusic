@@ -65,10 +65,28 @@ function albumMenu(e: MouseEvent, album: Album): void {
   overflow: hidden;
   box-shadow: var(--card-shadow);
   background: var(--bg-3);
-  transition: transform 0.45s var(--ease-spring);
+  transition:
+    transform var(--duration-slow) var(--ease-liquid),
+    box-shadow var(--duration-slow) var(--ease-liquid);
 }
 .card:hover .cover {
   transform: translateY(-4px) scale(1.015);
+  box-shadow:
+    var(--card-shadow),
+    0 14px 34px rgba(0, 0, 0, 0.18);
+}
+/* 悬停时封面上一层玻璃光泽:像光掠过唱片封套,而不是简单放大 */
+.cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0) 38%);
+  opacity: 0;
+  transition: opacity var(--duration-base) var(--ease-liquid);
+  pointer-events: none;
+}
+.card:hover .cover::after {
+  opacity: 1;
 }
 .cover img {
   width: 100%;
@@ -99,7 +117,9 @@ function albumMenu(e: MouseEvent, album: Album): void {
   justify-content: center;
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity 0.2s ease, transform 0.4s var(--ease-spring);
+  transition:
+    opacity var(--duration-fast) ease,
+    transform var(--duration-base) var(--ease-liquid);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 .playbtn svg {

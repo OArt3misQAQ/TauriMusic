@@ -128,32 +128,32 @@ onUnmounted(() => {
    这是弹窗玻璃反复出事的结构性根因)。@supports 命中后再升级为带折射的完整链 */
 html.glass:not(.dark) .modal {
   background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(24px) saturate(1.6);
-  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   /* 厚玻璃 rim light:顶边受光,整体一圈微光 */
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 1px 0 var(--glass-rim-top),
     inset 0 0 0 1px rgba(255, 255, 255, 0.22),
     0 24px 80px rgba(0, 0, 0, 0.4);
 }
 html.dark.glass .modal {
   background: rgba(27, 28, 32, 0.72);
-  backdrop-filter: blur(28px) saturate(1.4);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 1px 0 var(--glass-rim-top),
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),
     0 24px 80px rgba(0, 0, 0, 0.4);
 }
 /* 边缘透镜折射:中心清晰、边缘弯折,与侧栏/顶栏同一套折射滤镜 */
 @supports (backdrop-filter: url("#glass-refract")) {
   html.glass:not(.dark) .modal {
-    backdrop-filter: blur(24px) saturate(1.6) url("#glass-refract");
-    -webkit-backdrop-filter: blur(24px) saturate(1.6) url("#glass-refract");
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) url("#glass-refract");
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) url("#glass-refract");
   }
   html.dark.glass .modal {
-    backdrop-filter: blur(28px) saturate(1.4) url("#glass-refract");
-    -webkit-backdrop-filter: blur(28px) saturate(1.4) url("#glass-refract");
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) url("#glass-refract");
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) url("#glass-refract");
   }
 }
 </style>

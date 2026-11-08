@@ -122,26 +122,46 @@ function syncSystemBars(): void {
 }
 watchEffect(syncSystemBars);
 
-// 指针驱动的"液态光斑":玻璃面板的高光跟随光标流动(rAF 节流,仅玻璃模式更新)
+// 指针驱动的"液态光斑":高光不是硬跟随光标,而是以液体插值缓慢追上。
+// 只在玻璃 + 精致模式运行;触屏/流畅模式直接退出,避免滚动时反复重绘。
 let pointerRaf = 0;
-// 光斑的 radial-gradient 是 paint 层重绘:1px 级抖动不值得全窗重画,
-// 位移累计超过阈值才写 CSS 变量(阈值检查放在排帧之前,连 rAF 都省掉)
-let lastPx = -1e9;
-let lastPy = -1e9;
+let pointerTargetX = -999;
+let pointerTargetY = -999;
+let pointerGlowX = -999;
+let pointerGlowY = -999;
+let pointerSettled = true;
 function onPointerMove(e: PointerEvent): void {
-  // 触屏没有光标,光斑跟随既无意义又会在滚动时反复重绘玻璃
   if (isMobile || ui.perfMode === "smooth") return;
-  if (Math.abs(e.clientX - lastPx) < 8 && Math.abs(e.clientY - lastPy) < 8) return;
+  pointerTargetX = e.clientX;
+  pointerTargetY = e.clientY;
+  // 第一次进入直接把光斑放到光标处,避免从屏幕外"飞进来"
+  if (pointerSettled) {
+    pointerGlowX = pointerTargetX;
+    pointerGlowY = pointerTargetY;
+    pointerSettled = false;
+  }
   if (pointerRaf) return;
-  pointerRaf = requestAnimationFrame(() => {
+  const step = (): void => {
     pointerRaf = 0;
-    if (ui.skin !== "glass") return;
+    if (ui.skin !== "glass" || ui.perfMode === "smooth") {
+      pointerSettled = true;
+      return;
+    }
+    const dx = pointerTargetX - pointerGlowX;
+    const dy = pointerTargetY - pointerGlowY;
+    // 追上即停帧:静止时不持续写 CSS 变量,不产生常驻重绘
+    if (Math.abs(dx) < 1.5 && Math.abs(dy) < 1.5) {
+      pointerSettled = true;
+      return;
+    }
+    pointerGlowX += dx * 0.24;
+    pointerGlowY += dy * 0.24;
     const root = document.documentElement;
-    root.style.setProperty("--pointer-x", `${e.clientX}px`);
-    root.style.setProperty("--pointer-y", `${e.clientY}px`);
-    lastPx = e.clientX;
-    lastPy = e.clientY;
-  });
+    root.style.setProperty("--pointer-x", `${pointerGlowX.toFixed(1)}px`);
+    root.style.setProperty("--pointer-y", `${pointerGlowY.toFixed(1)}px`);
+    pointerRaf = requestAnimationFrame(step);
+  };
+  pointerRaf = requestAnimationFrame(step);
 }
 
 /** 托盘迷你面板是同前端的第二个窗口:按标签分支渲染,不跑主窗口的重初始化 */
@@ -483,68 +503,68 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
 /* 页面过渡:旧页快速虚化下沉,新页带模糊上浮落定 —— 玻璃的"流动感" */
 .page-enter-active {
   transition:
-    opacity 0.34s var(--ease-out-soft),
-    transform 0.34s var(--ease-out-soft),
-    filter 0.34s var(--ease-out-soft);
+    opacity var(--duration-base) var(--ease-liquid),
+    transform var(--duration-base) var(--ease-liquid),
+    filter var(--duration-base) var(--ease-liquid);
 }
 .page-leave-active {
   transition:
-    opacity 0.16s ease,
-    transform 0.16s ease,
-    filter 0.16s ease;
+    opacity var(--duration-fast) ease,
+    transform var(--duration-fast) ease,
+    filter var(--duration-fast) ease;
 }
 .page-enter-from {
   opacity: 0;
-  transform: translateY(14px) scale(0.992);
-  filter: blur(5px);
+  transform: translateY(10px) scale(0.996);
+  filter: blur(4px);
 }
 .page-leave-to {
   opacity: 0;
-  transform: scale(0.996);
-  filter: blur(3px);
+  transform: scale(0.998);
+  filter: blur(2px);
 }
 
 /* 全屏播放器:像一层玻璃从底部液化升起 */
 .np-enter-active {
   transition:
-    opacity 0.42s var(--ease-out-soft),
-    transform 0.5s var(--ease-out-soft),
-    filter 0.42s var(--ease-out-soft);
+    opacity var(--duration-slow) var(--ease-liquid),
+    transform 0.46s var(--ease-liquid),
+    filter var(--duration-slow) var(--ease-liquid);
 }
 .np-leave-active {
   transition:
     opacity 0.26s ease,
-    transform 0.3s ease,
+    transform 0.3s var(--ease-liquid),
     filter 0.26s ease;
 }
 .np-enter-from {
   opacity: 0;
-  transform: translateY(48px) scale(1.015);
-  filter: blur(8px);
+  transform: translateY(32px) scale(1.01);
+  filter: blur(6px);
 }
 .np-leave-to {
   opacity: 0;
-  transform: translateY(30px) scale(0.99);
-  filter: blur(5px);
+  transform: translateY(24px) scale(0.99);
+  filter: blur(4px);
 }
 
 /* 弹窗过渡:卡片弹簧上浮;遮罩用 background-color 淡入。
    遮罩不能动 opacity——overlay 挂着 backdrop-filter,opacity<1 会把元素隔离成
    backdrop root,模糊瞬间采不到背景,弹窗打开的第一帧窗口整个透底 */
 .modal-enter-active {
-  transition: background-color 0.28s var(--ease-out-soft);
+  transition: background-color var(--duration-base) var(--ease-liquid);
 }
 .modal-leave-active {
-  transition: background-color 0.2s ease;
+  transition: background-color var(--duration-fast) ease;
 }
 .modal-leave-active :deep(.modal) {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--duration-fast) ease;
 }
 .modal-leave-to :deep(.modal) {
   opacity: 0;
 }
 .modal-enter-active :deep(.modal) {
-  transition: transform 0.38s var(--ease-spring);
+  transition: transform var(--duration-base) var(--ease-liquid);
 }
 .modal-enter-from {
   background-color: rgba(0, 0, 0, 0);
@@ -553,7 +573,7 @@ x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="mapY"
   background-color: rgba(0, 0, 0, 0);
 }
 .modal-enter-from :deep(.modal) {
-  transform: translateY(16px) scale(0.965);
+  transform: translateY(12px) scale(0.98);
 }
 
 /* ===== 手机转场:轻量位移 + 淡入,不再整页模糊/缩放 ===== */
